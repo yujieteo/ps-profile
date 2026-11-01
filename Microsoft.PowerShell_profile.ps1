@@ -1,5 +1,5 @@
 # PowerShell profile for Windows PowerShell 5.1 in ConstrainedLanguage mode.
-# Version: 1.0.0
+# Version: 1.1.0
 # Cmdlets and core types only. Data files go to $env:LOCALAPPDATA\ps-profile.
 
 # Share roots to index for fd. Mapped drive letters are allowed, for example 'S:\Finance'.
@@ -197,12 +197,14 @@ $global:PSProfileRoots = @(foreach ($r in $global:ShareRoots) {
     @{
         Unc  = $unc
         Sep  = $sep
-        Base = Join-Path $global:PSProfileDataDir ('idx_' + ($unc -replace '[^A-Za-z0-9]+', '_'))
+        Base = Join-Path $global:PSProfileDataDir ('idx2_' + ($unc -replace '[^A-Za-z0-9]+', '_'))
     }
 })
 
 # Builds or updates the index. Runs in a background job, so it must be self-contained.
-# Per root: <base>.state holds one line per folder (ticks, path, files, subfolders), <base>.idx one path per line.
+# Per root: <base>.state holds one line per folder (ticks, path, files as name|size|ticks, subfolders).
+# <base>.idx holds one line per item: ticks, size and path, separated by tabs. Folders have no ticks or size.
+# Version 1.0.0 used the name idx_ and paths only. The new name makes sure that an old index is rebuilt, not misread.
 $global:PSProfileIndexBuilder = {
     param([string]$RootList, [string]$DataDir, [string]$Start, [int]$PauseMs, [int]$MaxAgeHours)
     $lock = Join-Path $DataDir 'index.lock'
@@ -221,7 +223,8 @@ $global:PSProfileIndexBuilder = {
             if (-not $root) { continue }
             $sep = '\'
             if ($root.StartsWith('/')) { $sep = '/' }
-            $base = Join-Path $DataDir ('idx_' + ($root -replace '[^A-Za-z0-9]+', '_'))
+            $name = $root -replace '[^A-Za-z0-9]+', '_'
+            $base = Join-Path $DataDir ('idx2_' + $name)
             if ($MaxAgeHours -gt 0) {
                 $i = Get-Item -LiteralPath "$base.idx" -ErrorAction SilentlyContinue
                 if ($i -and $i.LastWriteTime -gt (Get-Date).AddHours(-$MaxAgeHours)) { continue }
@@ -253,7 +256,9 @@ $global:PSProfileIndexBuilder = {
                 $line = $old[$dir]
                 if (-not $line -or $line.Split("`t")[0] -ne $ticks) {
                     $kids = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
-                    $files = @($kids | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.Name }) -join '|'
+                    $files = @($kids | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+                        $_.Name + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks
+                    }) -join '|'
                     $subs = @($kids | Where-Object { $_.PSIsContainer -and -not ([int]$_.Attributes -band 1024) } | ForEach-Object { $_.Name }) -join '|'
                     $line = "$ticks`t$dir`t$files`t$subs"
                 }
@@ -271,11 +276,16 @@ $global:PSProfileIndexBuilder = {
             Move-Item -LiteralPath "$base.state.tmp" -Destination "$base.state" -Force
             $paths = foreach ($line in $all) {
                 $f = $line.Split("`t")
-                $f[1]
-                if ($f[2]) { foreach ($n in $f[2].Split('|')) { $f[1] + $sep + $n } }
+                "`t`t" + $f[1]
+                if ($f[2]) {
+                    $n = $f[2].Split('|')
+                    for ($j = 0; $j + 2 -lt $n.Count; $j += 3) { $n[$j + 2] + "`t" + $n[$j + 1] + "`t" + $f[1] + $sep + $n[$j] }
+                }
             }
             Set-Content -LiteralPath "$base.idx.tmp" -Value $paths -Encoding UTF8
             Move-Item -LiteralPath "$base.idx.tmp" -Destination "$base.idx" -Force
+            $oldBase = Join-Path $DataDir ('idx_' + $name)
+            Remove-Item -LiteralPath "$oldBase.idx", "$oldBase.state" -Force -ErrorAction SilentlyContinue
         }
     } finally {
         Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
@@ -335,18 +345,48 @@ function global:Update-Index {
 
 # ---------------------------------------------------------------- fd
 
-function global:fd {
+# Lines "ticks<tab>size<tab>path" (UTC ticks, bytes) with -Meta, else paths. Folders have no ticks or size.
+# A filter (-Ext, -Changed, -Size) returns files only. fd and recent use this function.
+function global:Find-PSProfileFile {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)][string]$Pattern = '.',
-        [Parameter(Position = 1)][string]$Path = '.'
+        [string]$Pattern = '.',
+        [string]$Path = '.',
+        [string[]]$Ext,
+        [string]$Changed,
+        [string]$Size,
+        [switch]$Meta
     )
+    $filter = $Ext -or $Changed -or $Size
+    $extRx = ''
+    if ($Ext) { $extRx = '\.(?:' + ((@($Ext) | ForEach-Object { [regex]::Escape($_.TrimStart('.')) }) -join '|') + ')$' }
+    $since = ''
+    if ($Changed) {
+        if ($Changed -notmatch '^(\d+)d?$') { Write-Error "fd: -Changed '$Changed' is not valid. Use days, for example 30d."; return }
+        $since = '' + (Get-Date).ToUniversalTime().AddDays(- [int]$Matches[1]).Ticks
+    }
+    $min = -1
+    $max = -1
+    if ($Size) {
+        if ($Size -notmatch '^([+-]?)(\d+(?:\.\d+)?)(B|KB|MB|GB)?$') { Write-Error "fd: -Size '$Size' is not valid. Use for example +1MB or -10KB."; return }
+        $unit = @{ '' = 1; 'B' = 1; 'KB' = 1KB; 'MB' = 1MB; 'GB' = 1GB }[('' + $Matches[3]).ToUpper()]
+        $bytes = [double]$Matches[2] * $unit
+        if ($Matches[1] -eq '-') { $max = $bytes } else { $min = $bytes }
+    }
     $typed = Get-PSProfileFullPath $Path
     $unc = ConvertTo-PSProfileUnc $typed
     $root = Find-PSProfileRoot $unc
     if (-not $root) {
-        Get-ChildItem -LiteralPath $typed -Recurse -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match $Pattern } | ForEach-Object { $_.FullName }
+        foreach ($i in @(Get-ChildItem -LiteralPath $typed -Recurse -Force -File:$filter -ErrorAction SilentlyContinue)) {
+            if ($i.Name -notmatch $Pattern) { continue }
+            if ($extRx -and $i.Name -notmatch $extRx) { continue }
+            if ($since -and $i.LastWriteTimeUtc.Ticks -lt [long]$since) { continue }
+            if ($min -ge 0 -and $i.Length -lt $min) { continue }
+            if ($max -ge 0 -and $i.Length -gt $max) { continue }
+            if (-not $Meta) { $i.FullName }
+            elseif ($i.PSIsContainer) { "`t`t" + $i.FullName }
+            else { '{0}{1}{2}{1}{3}' -f $i.LastWriteTimeUtc.Ticks, "`t", $i.Length, $i.FullName }
+        }
         return
     }
     $lines = Get-PSProfileIndex $root
@@ -354,14 +394,59 @@ function global:fd {
     $sep = $root.Sep
     $uncPrefix = $unc.TrimEnd($sep) + $sep
     $typedPrefix = $typed.TrimEnd('\', '/') + $sep
-    # Fast filter on full paths first. A leading ^ also matches after a separator, so no leaf match is lost.
+    # Fast filters on whole lines first. A leading ^ also matches after a separator, so no leaf match is lost.
     $full = $Pattern
     if ($full.StartsWith('^')) { $full = '(?:^|[\\/])' + $full.Substring(1) }
-    $hits = $lines -match $full
-    $hits = $hits -like (($uncPrefix -replace '([\[\]\*\?`])', '`$1') + '*')
+    $hits = @($lines) -match $full
+    $hits = $hits -like ("*`t" + ($uncPrefix -replace '([\[\]\*\?`])', '`$1') + '*')
+    if ($extRx) { $hits = $hits -match $extRx }
+    # Ticks have 18 digits, so a string comparison is a number comparison.
+    if ($since) { $hits = $hits -ge $since }
     foreach ($h in $hits) {
-        $leaf = $h.Substring($h.LastIndexOf($sep) + 1)
-        if ($leaf -match $Pattern) { $typedPrefix + $h.Substring($uncPrefix.Length) }
+        $f = $h.Split("`t")
+        $leaf = $f[2].Substring($f[2].LastIndexOf($sep) + 1)
+        if ($leaf -notmatch $Pattern) { continue }
+        if ($filter -and -not $f[1]) { continue }
+        if ($min -ge 0 -and [long]$f[1] -lt $min) { continue }
+        if ($max -ge 0 -and [long]$f[1] -gt $max) { continue }
+        $p = $typedPrefix + $f[2].Substring($uncPrefix.Length)
+        if ($Meta) { $f[0] + "`t" + $f[1] + "`t" + $p } else { $p }
+    }
+}
+
+function global:fd {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)][string]$Pattern = '.',
+        [Parameter(Position = 1)][string]$Path = '.',
+        [string[]]$Ext,
+        [string]$Changed,
+        [string]$Size
+    )
+    Find-PSProfileFile @PSBoundParameters
+}
+
+function global:Format-PSProfileSize([double]$Bytes) {
+    if ($Bytes -ge 1GB) { return '{0:0.0} GB' -f ($Bytes / 1GB) }
+    if ($Bytes -ge 1MB) { return '{0:0.0} MB' -f ($Bytes / 1MB) }
+    if ($Bytes -ge 1KB) { return '{0:0.0} KB' -f ($Bytes / 1KB) }
+    '{0} B' -f $Bytes
+}
+
+function global:recent {
+    param(
+        [Parameter(Position = 0)][string]$Path = '.',
+        [int]$Days = 7,
+        [int]$Count = 20
+    )
+    $toHost = Test-PSProfileToHost $MyInvocation
+    $lines = @(Find-PSProfileFile -Path $Path -Changed "${Days}d" -Meta | Sort-Object -Descending | Select-Object -First $Count)
+    foreach ($l in $lines) {
+        $f = $l.Split("`t")
+        if (-not $toHost) { $f[2]; continue }
+        $t = (New-Object DateTime ([long]$f[0]), 'Utc').ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        Write-Host ('{0}  {1,10}  ' -f $t, (Format-PSProfileSize $f[1])) -ForegroundColor DarkGray -NoNewline
+        Write-Host $f[2]
     }
 }
 
@@ -490,6 +575,45 @@ function global:rg {
 
 # ---------------------------------------------------------------- fzf
 
+# Preview rows for a picker item: a file shows its lines (bat), a folder shows its items.
+# An rg match shows the lines around the match. Other items have no preview.
+function global:Get-PSProfilePreview($Item, [int]$Rows) {
+    $path = $null
+    $line = 0
+    if ($Item -is [string]) { $path = $Item }
+    elseif ($Item.FullName) { $path = $Item.FullName }
+    elseif ($Item.Path) { $path = $Item.Path; $line = [int]$Item.LineNumber }
+    if (-not $path) { return }
+    try { $i = Get-Item -LiteralPath $path -Force -ErrorAction Stop } catch { return }
+    if ($i.PSIsContainer) {
+        $sep = '\'
+        if ($i.FullName.StartsWith('/')) { $sep = '/' }
+        foreach ($c in @(Get-ChildItem -LiteralPath $i.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First $Rows)) {
+            $n = $c.Name
+            if ($c.PSIsContainer) { $n += $sep }
+            @{ N = ''; Text = $n; Mark = $false }
+        }
+        return
+    }
+    if ($i.Length -gt 20MB) { return @{ N = ''; Text = '(file over 20 MB)'; Mark = $false } }
+    try { $lines = Get-PSProfileFileLines $i.FullName } catch { return @{ N = ''; Text = '(binary file)'; Mark = $false } }
+    $a = 1
+    if ($line) { $a = $line - [int]($Rows / 2) }
+    if ($a -lt 1) { $a = 1 }
+    for ($n = $a; $n -lt $a + $Rows -and $n -le $lines.Count; $n++) {
+        @{ N = $n; Text = $lines[$n - 1]; Mark = ($n -eq $line) }
+    }
+}
+
+# Text cut or padded to exactly $Width characters. -End keeps the end of the text.
+function global:Format-PSProfileFit([string]$Text, [int]$Width, [switch]$End) {
+    $t = $Text -replace '\t', '    ' -replace '[\x00-\x1f]', ' '
+    if ($t.Length -gt $Width) {
+        if ($End) { $t = '..' + $t.Substring($t.Length - $Width + 2) } else { $t = $t.Substring(0, $Width - 2) + '..' }
+    }
+    $t.PadRight($Width)
+}
+
 function global:fzf {
     param([string]$Query = '')
     $items = @($input)
@@ -497,12 +621,15 @@ function global:fzf {
     $texts = @(foreach ($it in $items) {
         $t = $it
         if ($it -isnot [string]) {
-            if ($it.FullName) { $t = $it.FullName }
+            if ($it.Display) { $t = $it.Display }
+            elseif ($it.FullName) { $t = $it.FullName }
             elseif ($it.Path -and $it.LineNumber) { $t = '{0}:{1}: {2}' -f $it.Path, $it.LineNumber, $it.Line }
             else { $t = (($it | Out-String).Trim() -replace '\s+', ' ') }
         }
         $t
     })
+    $width = 0
+    try { $width = $Host.UI.RawUI.WindowSize.Width } catch { }
     while ($true) {
         $tokens = @($Query -split '\s+' | Where-Object { $_ })
         $cand = $texts
@@ -541,10 +668,43 @@ function global:fzf {
         } else {
             $top = @($cand | Select-Object -First 20)
         }
+        # The preview at the side shows item 1.
+        $prev = @()
+        if ($top.Count -and $width -ge 60) {
+            for ($i = 0; $i -lt $texts.Count; $i++) {
+                if ($texts[$i] -ceq $top[0]) { $prev = @(Get-PSProfilePreview $items[$i] 20); break }
+            }
+        }
         Write-Host ('{0} of {1} match' -f $total, $texts.Count) -ForegroundColor DarkGray
-        for ($i = 0; $i -lt $top.Count; $i++) {
-            Write-Host ('{0,3} ' -f ($i + 1)) -ForegroundColor Cyan -NoNewline
-            Write-Host $top[$i]
+        if ($prev.Count) {
+            $lw = ($width - $width % 2) / 2 - 1
+            $rw = $width - $lw - 4
+            $rows = $top.Count
+            if ($prev.Count -gt $rows) { $rows = $prev.Count }
+            for ($i = 0; $i -lt $rows; $i++) {
+                if ($i -lt $top.Count) {
+                    Write-Host ('{0,3} ' -f ($i + 1)) -ForegroundColor Cyan -NoNewline
+                    Write-Host (Format-PSProfileFit $top[$i] ($lw - 4) -End:($top[$i] -match '[\\/]')) -NoNewline
+                } else {
+                    Write-Host (''.PadRight($lw)) -NoNewline
+                }
+                Write-Host ' | ' -ForegroundColor DarkGray -NoNewline
+                if ($i -ge $prev.Count) { Write-Host ''; continue }
+                $p = $prev[$i]
+                $tw = $rw
+                if ($p.N) {
+                    Write-Host ('{0,5} ' -f $p.N) -ForegroundColor DarkGray -NoNewline
+                    $tw -= 6
+                }
+                $c = 'Gray'
+                if ($p.Mark) { $c = 'Yellow' }
+                Write-Host (Format-PSProfileFit $p.Text $tw).TrimEnd() -ForegroundColor $c
+            }
+        } else {
+            for ($i = 0; $i -lt $top.Count; $i++) {
+                Write-Host ('{0,3} ' -f ($i + 1)) -ForegroundColor Cyan -NoNewline
+                Write-Host ($top[$i] -replace '\s*[\r\n]+\s*', ' ')
+            }
         }
         $r = Read-Host 'Number to pick, text to filter, Enter to quit'
         if (-not $r) { return }
@@ -692,10 +852,11 @@ function global:Get-PSProfileDiff($A, $B) {
     for ($i = 0; $i -lt $suf; $i++) { @{ T = ' '; A = $lenA - $suf + $i; B = $lenB - $suf + $i } }
 }
 
-function global:Get-PSProfileDiffLines([string]$Path) {
+# Lines of a text file or an Office file. delta, bat and the fzf preview use this function.
+function global:Get-PSProfileFileLines([string]$Path) {
     if ($Path -match '\.(docx|xlsx|pptx)$') { return , @(ConvertFrom-PSProfileOffice (Get-PSProfileFullPath $Path)) }
     $text = Read-PSProfileText $Path
-    if ($null -eq $text) { throw "delta: '$Path' is a binary file." }
+    if ($null -eq $text) { throw "'$Path' is a binary file." }
     $lines = Split-PSProfileLines $text
     , $lines
 }
@@ -719,8 +880,8 @@ function global:delta {
     $toHost = Test-PSProfileToHost $MyInvocation
     if (-not (Test-Path -LiteralPath $Path1)) { Write-Error "delta: '$Path1' not found."; return }
     if (-not (Test-Path -LiteralPath $Path2)) { Write-Error "delta: '$Path2' not found."; return }
-    $a = Get-PSProfileDiffLines $Path1
-    $b = Get-PSProfileDiffLines $Path2
+    $a = Get-PSProfileFileLines $Path1
+    $b = Get-PSProfileFileLines $Path2
     if ($a.Count -gt 20000 -or $b.Count -gt 20000) {
         Write-Warning ('delta: large input ({0} and {1} lines). This can be slow.' -f $a.Count, $b.Count)
     }
@@ -800,6 +961,229 @@ function global:delta {
     }
 }
 
+# ---------------------------------------------------------------- bat
+
+# File with line numbers. Office files show as text. No pager. Piped output is the plain lines.
+function global:bat {
+    param(
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias('FullName')][string[]]$Path,
+        [ValidatePattern('^\d*-\d*$')][string]$Range,
+        [string]$Pattern
+    )
+    begin {
+        $toHost = Test-PSProfileToHost $MyInvocation
+        $from = 1
+        $to = 0
+        if ($Range -match '^(\d*)-(\d*)$') {
+            if ($Matches[1]) { $from = [int]$Matches[1] }
+            if ($Matches[2]) { $to = [int]$Matches[2] }
+        }
+    }
+    process {
+        foreach ($p in $Path) {
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Error "bat: '$p' not found."; continue }
+            try { $lines = Get-PSProfileFileLines $p } catch { Write-Error "bat: $($_.Exception.Message)"; continue }
+            $last = $lines.Count
+            if ($to -and $to -lt $last) { $last = $to }
+            if (-not $toHost) {
+                for ($n = $from; $n -le $last; $n++) { $lines[$n - 1] }
+                continue
+            }
+            Write-Host (Get-PSProfileFullPath $p) -ForegroundColor Magenta
+            $fmt = '{0,' + ('' + $last).Length + '} '
+            for ($n = $from; $n -le $last; $n++) {
+                Write-Host ($fmt -f $n) -ForegroundColor DarkGray -NoNewline
+                $ms = $null
+                if ($Pattern) { $ms = [regex]::Matches($lines[$n - 1], '(?i)' + $Pattern) }
+                if ($ms -and $ms.Count) { Write-PSProfileMatchLine $lines[$n - 1] $ms } else { Write-Host $lines[$n - 1] }
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------- du
+
+# Folder sizes as a tree, largest first. Piped output is objects with Size (bytes) and Path.
+function global:du {
+    param(
+        [Parameter(Position = 0)][string]$Path = '.',
+        [int]$Depth = 2
+    )
+    $toHost = Test-PSProfileToHost $MyInvocation
+    $top = (Get-PSProfileFullPath $Path).TrimEnd('\', '/')
+    $sep = '\'
+    if ($top.StartsWith('/')) { $sep = '/' }
+    if (-not $top) { $top = $sep }
+    $size = @{ $top = [long]0 }
+    $kids = @{ $top = @() }
+    $own = @{}
+    foreach ($i in @(Get-ChildItem -LiteralPath $top -Recurse -Force -ErrorAction SilentlyContinue)) {
+        $parent = $i.FullName.Substring(0, $i.FullName.LastIndexOf($sep))
+        if (-not $parent) { $parent = $sep }
+        if ($i.PSIsContainer) {
+            if (-not $size.ContainsKey($i.FullName)) { $size[$i.FullName] = [long]0; $kids[$i.FullName] = @() }
+            if (-not $kids.ContainsKey($parent)) { $kids[$parent] = @() }
+            $kids[$parent] += $i.FullName
+        } else {
+            $own[$parent] += $i.Length
+        }
+    }
+    # Add the size of the files in each folder to that folder and to each parent up to the top.
+    foreach ($d in @($own.Keys)) {
+        $x = $d
+        while ($true) {
+            $size[$x] += $own[$d]
+            if ($x.Length -le $top.Length) { break }
+            $x = $x.Substring(0, $x.LastIndexOf($sep))
+            if (-not $x) { $x = $sep }
+        }
+    }
+    $show = {
+        param($Dir, $Level)
+        if ($toHost) {
+            Write-Host ('{0,10}  ' -f (Format-PSProfileSize $size[$Dir])) -ForegroundColor DarkGray -NoNewline
+            $name = $Dir
+            if ($Level) { $name = ('  ' * $Level) + $Dir.Substring($Dir.LastIndexOf($sep) + 1) }
+            Write-Host $name -ForegroundColor Cyan
+        } else {
+            New-Object PSObject -Property @{ Size = $size[$Dir]; Path = $Dir } | Select-Object Size, Path
+        }
+        if ($Level -lt $Depth) {
+            foreach ($k in @($kids[$Dir] | Sort-Object { $size[$_] } -Descending)) { & $show $k ($Level + 1) }
+        }
+    }
+    & $show $top 0
+}
+
+# ---------------------------------------------------------------- rgi / br
+
+# Content search in the picker. The preview shows the lines around the match. A pick opens the file.
+function global:rgi {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Pattern,
+        [Parameter(Position = 1)][string[]]$Path,
+        [Alias('i')][switch]$IgnoreCase,
+        [switch]$Office
+    )
+    $a = @{ Pattern = $Pattern; IgnoreCase = $IgnoreCase; Office = $Office }
+    if ($Path) { $a.Path = $Path }
+    $pick = rg @a | fzf
+    if ($pick) { Invoke-Item -LiteralPath $pick.Path }
+}
+
+# Folder browser. Shows two levels of the folder. A pick of a folder enters it, a pick of a file opens it.
+function global:br {
+    param([Parameter(Position = 0)][string]$Path = '.')
+    $dir = Get-PSProfileFullPath $Path
+    $sep = '\'
+    if ($dir.StartsWith('/')) { $sep = '/' }
+    while ($true) {
+        $base = $dir.TrimEnd('\', '/')
+        $items = @()
+        $up = Split-Path -Parent $dir
+        if ($up) { $items += New-Object PSObject -Property @{ Display = '..' + $sep; Path = $up; IsDir = $true } }
+        $items += @(Get-ChildItem -LiteralPath $dir -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object {
+            $d = $_.FullName.Substring($base.Length + 1)
+            if ($_.PSIsContainer) { $d += $sep }
+            New-Object PSObject -Property @{ Display = $d; Path = $_.FullName; IsDir = $_.PSIsContainer }
+        } | Sort-Object Display)
+        Write-Host "br: $dir" -ForegroundColor Magenta
+        $pick = $items | fzf
+        if (-not $pick) { return }
+        if (-not $pick.IsDir) { Invoke-Item -LiteralPath $pick.Path; return }
+        $dir = $pick.Path
+    }
+}
+
+# Commands from the full PSReadLine history, newest first, each one time only.
+function global:Get-PSProfileHistory {
+    $file = (Get-PSReadLineOption).HistorySavePath
+    if (-not (Test-Path -LiteralPath $file)) { return }
+    # A line that ends with a backtick continues on the next line.
+    $cmds = @()
+    $cur = ''
+    foreach ($l in (Get-Content -LiteralPath $file -Encoding UTF8)) {
+        if ($l -match '`$') { $cur += $l.Substring(0, $l.Length - 1) + "`n"; continue }
+        $cmds += $cur + $l
+        $cur = ''
+    }
+    $seen = @{}
+    for ($i = $cmds.Count - 1; $i -ge 0; $i--) {
+        $c = $cmds[$i]
+        if ($c.Trim() -and -not $seen.ContainsKey($c)) { $seen[$c] = $true; $c }
+    }
+}
+
+# ---------------------------------------------------------------- tldr
+
+# Examples for the profile commands. Each entry: purpose, then 'command  # what it does'.
+$global:PSProfileTldr = [ordered]@{
+    'fd'           = 'Find files by name. Uses the index under ShareRoots.',
+                     'fd report  # Files and folders with report in the name',
+                     "fd '\.pdf$' S:\Finance  # PDF files under a folder",
+                     'fd -Ext docx,xlsx  # Files with these extensions',
+                     'fd -Changed 30d  # Files changed in the last 30 days',
+                     'fd -Size +1MB  # Files of 1 MB or more (-10KB for 10 KB or less)'
+    'recent'       = 'The most recently changed files under the current folder.',
+                     'recent  # 20 files changed in the last 7 days',
+                     'recent -Days 30 -Count 50  # 50 files changed in the last 30 days'
+    'rg'           = 'Search file content. Alias grep.',
+                     'rg TODO  # Lines with TODO under the current folder',
+                     'rg -i invoice -g *.txt  # Ignore case, only .txt files',
+                     'rg budget -Office  # Also search .docx, .xlsx and .pptx files',
+                     'rg error -C 2  # Show 2 lines before and after each match',
+                     'fd -Ext csv | rg total  # Search only the files that fd finds'
+    'rgi'          = 'Content search in the picker. A pick opens the file.',
+                     'rgi budget -Office  # Pick a match. The preview shows the lines around it.'
+    'fzf'          = 'Pick an item from a list. Type text to filter. The preview shows item 1.',
+                     'fd report | fzf  # Pick a file. Type a number to pick it.',
+                     'Get-Process | fzf  # Pick any object'
+    'br'           = 'Browse folders in the picker. A folder enters it, a file opens it.',
+                     'br  # Browse the current folder',
+                     'br S:\Finance  # Browse a share folder'
+    'bat'          = 'Show a file with line numbers. Office files show as text.',
+                     'bat notes.txt  # Whole file',
+                     'bat report.docx  # Text of a Word file',
+                     'bat log.txt -Range 100-200  # Lines 100 to 200',
+                     'bat log.txt -Pattern error  # Highlight error'
+    'du'           = 'Folder sizes as a tree, largest first.',
+                     'du  # Two levels under the current folder',
+                     'du S:\Finance -Depth 1  # One level under a folder'
+    'z'            = 'Go to a folder that you used before. zi shows a picker.',
+                     'z fin  # Best folder that matches fin',
+                     'zi  # Pick a folder from the list'
+    'delta'        = 'Show the differences between two files. Office files are compared as text.',
+                     'delta old.docx new.docx  # Changes between two Word files'
+    'Update-Index' = 'Build or refresh the file index for ShareRoots.',
+                     'Update-Index  # All share roots',
+                     "Update-Index 'S:\Finance\2026'  # One folder"
+    # ConstrainedLanguage blocks text input on the command line, so the keys put the pick on the clipboard.
+    'Ctrl+R'       = 'Key. Pick a command from the full history. The pick goes to the clipboard.',
+                     'Ctrl+R  # Pick a command, then press Ctrl+V to insert it'
+    'Ctrl+T'       = 'Key. Pick a file under the current folder. The path goes to the clipboard.',
+                     'Ctrl+T  # Pick a file, then press Ctrl+V to insert its path'
+    'tldr'         = 'Examples for the profile commands.',
+                     'tldr  # List the commands',
+                     'tldr fd  # Examples for fd'
+}
+
+function global:tldr([string]$Name) {
+    if (-not $Name) {
+        foreach ($k in $global:PSProfileTldr.Keys) { '{0,-13} {1}' -f $k, $global:PSProfileTldr[$k][0] }
+        return
+    }
+    $e = $global:PSProfileTldr[$Name]
+    if (-not $e) { Write-Error "tldr: no page for '$Name'. Run tldr to see the list."; return }
+    $e[0]
+    for ($i = 1; $i -lt $e.Count; $i++) {
+        $p = $e[$i] -split '  # ', 2
+        ''
+        '  ' + $p[1]
+        '    ' + $p[0]
+    }
+}
+
 # ---------------------------------------------------------------- QOL
 
 if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
@@ -807,6 +1191,23 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward
     Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
     Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+    # ConstrainedLanguage blocks the PSReadLine methods that put text on the command line.
+    # So the pick goes to the clipboard, and Ctrl+V inserts it.
+    Set-PSReadLineKeyHandler -Chord Ctrl+r -BriefDescription PickHistory -Description 'Pick a command from the full history and copy it' -ScriptBlock {
+        Write-Host ''
+        $pick = Get-PSProfileHistory | fzf
+        if ($pick) { Set-Clipboard -Value $pick; Write-Host 'Copied. Press Ctrl+V to insert it.' -ForegroundColor DarkGray }
+    }
+    Set-PSReadLineKeyHandler -Chord Ctrl+t -BriefDescription PickFile -Description 'Pick a file under the current folder and copy its path' -ScriptBlock {
+        Write-Host ''
+        # Folder lines in -Meta output start with a tab.
+        $pick = @(Find-PSProfileFile -Meta) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
+        if ($pick) {
+            if ($pick -match "[\s'`$&()\[\]{};,@#]") { $pick = "'" + ($pick -replace "'", "''") + "'" }
+            Set-Clipboard -Value $pick
+            Write-Host 'Copied. Press Ctrl+V to insert it.' -ForegroundColor DarkGray
+        }
+    }
 }
 
 function global:.. { Set-Location .. }
