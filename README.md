@@ -16,7 +16,7 @@ The profile adds these commands:
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. |
 | `rg` (alias `grep`) | Search file content. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
-| `fzf` | Pick an item from a list. Type text to filter the list. Type a number to pick an item. |
+| `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
 | `bat` | Show a file with line numbers. Office files show as text. Use `-Range 100-200` to show some lines and `-Pattern` to highlight text. |
 | `du` | Show folder sizes as a tree, largest first. Use `-Depth` to change the number of levels. |
@@ -86,6 +86,7 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 
 - `idx2_*.idx` and `idx2_*.state`: the file index for each share root.
 - `index.lock`: exists only while an index build runs.
+- `idx2_*.partial`: exists while an index build is not finished. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
@@ -99,12 +100,12 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - `rg -Office`, `bat`, `delta` and the preview read Office files by unpacking the file and reading its XML. Legacy `.doc`, `.xls` and `.ppt` files are not read.
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
-- The picker uses `Read-Host`. Type text and press Enter to filter, or type a number and press Enter to pick. It does not filter on each key.
+- The picker uses `Read-Host`. Type text and press Enter to filter, or type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
 ## Release
 
-The current version is 1.1.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 1.2.0. See [CHANGELOG.md](CHANGELOG.md).
 
 After the change merges to the default branch:
 
