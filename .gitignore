@@ -1,0 +1,14 @@
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Logs
+*.log

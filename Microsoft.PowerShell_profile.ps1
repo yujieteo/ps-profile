@@ -1,4 +1,5 @@
 # PowerShell profile for Windows PowerShell 5.1 in ConstrainedLanguage mode.
+# Version: 1.0.0
 # Cmdlets and core types only. Data files go to $env:LOCALAPPDATA\ps-profile.
 
 # Share roots to index for fd. Mapped drive letters are allowed, for example 'S:\Finance'.
