@@ -820,8 +820,10 @@ function global:Get-PSProfileZ([string[]]$Terms) {
 
 # A jump raises the rank of the folder. A dead entry is removed only when a jump to it fails.
 function global:Enter-PSProfileZ([string]$Path) {
-    try { Set-Location -LiteralPath $Path -ErrorAction Stop; Add-PSProfileZ (Get-Location).ProviderPath; return $true }
+    try { Set-Location -LiteralPath $Path -ErrorAction Stop }
     catch { Remove-PSProfileZ $Path; Write-Warning "z: removed dead entry '$Path'."; return $false }
+    Add-PSProfileZ (Get-Location).ProviderPath
+    return $true
 }
 
 function global:z {
