@@ -1,5 +1,5 @@
 # PowerShell profile for Windows PowerShell 5.1 in ConstrainedLanguage mode.
-# Version: 1.1.0
+# Version: 1.2.0
 # Cmdlets and core types only. Data files go to $env:LOCALAPPDATA\ps-profile.
 
 # Share roots to index for fd. Mapped drive letters are allowed, for example 'S:\Finance'.
@@ -121,6 +121,7 @@ function global:Get-PSProfileRunText([string]$Xml) {
 # Lines of text from .docx (one per paragraph), .xlsx (one per cell), .pptx (one per slide and shape).
 function global:ConvertFrom-PSProfileOffice([string]$Path) {
     $ext = ([regex]::Match($Path, '\.[^.\\/]*$').Value).ToLower()
+    $ProgressPreference = 'SilentlyContinue'
     $tmp = Join-Path $env:TEMP ('ps-profile-' + (Get-Random))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
@@ -227,10 +228,15 @@ $global:PSProfileIndexBuilder = {
             $base = Join-Path $DataDir ('idx2_' + $name)
             if ($MaxAgeHours -gt 0) {
                 $i = Get-Item -LiteralPath "$base.idx" -ErrorAction SilentlyContinue
-                if ($i -and $i.LastWriteTime -gt (Get-Date).AddHours(-$MaxAgeHours)) { continue }
+                if ($i -and -not (Test-Path -LiteralPath "$base.partial") -and $i.LastWriteTime -gt (Get-Date).AddHours(-$MaxAgeHours)) { continue }
             }
             $from = $root
             if ($Start) { $from = $Start }
+            # An unreachable folder must not replace the index with an empty one.
+            if (-not (Get-Item -LiteralPath $from -Force -ErrorAction SilentlyContinue)) {
+                Write-Warning "Index: '$from' is not reachable. The old index stays."
+                continue
+            }
             $fromLower = $from.ToLower()
             $prefixLower = $fromLower + $sep
 
@@ -241,49 +247,82 @@ $global:PSProfileIndexBuilder = {
                 }
             }
 
+            # Writes the state and the index. $New (index to line) holds the new lines. Old lines not in $Visited stay.
+            $save = {
+                param($New, $Visited)
+                $keep = foreach ($k in $old.Keys) {
+                    $kl = $k.ToLower()
+                    if ($Visited) {
+                        if (-not $Visited.ContainsKey($k)) { $old[$k] }
+                    } elseif ($kl -ne $fromLower -and -not $kl.StartsWith($prefixLower)) { $old[$k] }
+                }
+                $all = @($keep) + @(for ($q = 0; $q -lt $New.Count; $q++) { $New[$q] })
+                Set-Content -LiteralPath "$base.state.tmp" -Value $all -Encoding UTF8
+                Move-Item -LiteralPath "$base.state.tmp" -Destination "$base.state" -Force
+                $paths = foreach ($line in $all) {
+                    $f = $line.Split("`t")
+                    "`t`t" + $f[1]
+                    if ($f[2]) {
+                        $n = $f[2].Split('|')
+                        for ($j = 0; $j + 2 -lt $n.Count; $j += 3) { $n[$j + 2] + "`t" + $n[$j + 1] + "`t" + $f[1] + $sep + $n[$j] }
+                    }
+                }
+                Set-Content -LiteralPath "$base.idx.tmp" -Value $paths -Encoding UTF8
+                Move-Item -LiteralPath "$base.idx.tmp" -Destination "$base.idx" -Force
+            }
+            # A window close stops this job. The marker and the saves at intervals keep the progress.
+            Set-Content -LiteralPath "$base.partial" -Value 'partial' -Encoding UTF8
+            $nextSave = (Get-Date).AddSeconds(120)
+
             $queue = @{}
             $head = 0
             $tail = 0
             $queue[$tail++] = $from
-            $new = while ($head -lt $tail) {
+            $done = @{}
+            $new = @{}
+            while ($head -lt $tail) {
                 $dir = $queue[$head]
                 $queue.Remove($head)
                 $head++
                 if ($PauseMs) { Start-Sleep -Milliseconds $PauseMs }
-                $item = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
-                if (-not $item) { continue }
-                $ticks = '' + $item.LastWriteTimeUtc.Ticks
-                $line = $old[$dir]
-                if (-not $line -or $line.Split("`t")[0] -ne $ticks) {
-                    $kids = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
-                    $files = @($kids | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
-                        $_.Name + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks
-                    }) -join '|'
-                    $subs = @($kids | Where-Object { $_.PSIsContainer -and -not ([int]$_.Attributes -band 1024) } | ForEach-Object { $_.Name }) -join '|'
-                    $line = "$ticks`t$dir`t$files`t$subs"
+                if ((Get-Date) -gt $nextSave) {
+                    & $save $new $done
+                    $nextSave = (Get-Date).AddSeconds(120)
                 }
-                $line
+                $line = $old[$dir]
+                $item = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+                $failed = -not $item
+                if ($item) {
+                    $ticks = '' + $item.LastWriteTimeUtc.Ticks
+                    if (-not $line -or $line.Split("`t")[0] -ne $ticks) {
+                        $kids = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue -ErrorVariable listErr)
+                        if ($listErr.Count -and $line) { $failed = $true }
+                        else {
+                            $files = @($kids | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+                                $_.Name + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks
+                            }) -join '|'
+                            $subs = @($kids | Where-Object { $_.PSIsContainer -and -not ([int]$_.Attributes -band 1024) } | ForEach-Object { $_.Name }) -join '|'
+                            $line = "$ticks`t$dir`t$files`t$subs"
+                        }
+                    }
+                }
+                if ($failed) {
+                    # A folder that is not reachable keeps its old lines and the old lines below it.
+                    $dirLower = $dir.ToLower()
+                    foreach ($k in @($old.Keys)) {
+                        $kl = $k.ToLower()
+                        if ($kl -eq $dirLower -or $kl.StartsWith($dirLower + $sep)) { $new[$new.Count] = $old[$k]; $done[$k] = $true }
+                    }
+                    continue
+                }
+                $new[$new.Count] = $line
+                $done[$dir] = $true
                 $subs = $line.Split("`t")[3]
                 if ($subs) { foreach ($s in $subs.Split('|')) { $queue[$tail++] = $dir + $sep + $s } }
             }
 
-            $keep = foreach ($k in $old.Keys) {
-                $kl = $k.ToLower()
-                if ($kl -ne $fromLower -and -not $kl.StartsWith($prefixLower)) { $old[$k] }
-            }
-            $all = @($keep) + @($new)
-            Set-Content -LiteralPath "$base.state.tmp" -Value $all -Encoding UTF8
-            Move-Item -LiteralPath "$base.state.tmp" -Destination "$base.state" -Force
-            $paths = foreach ($line in $all) {
-                $f = $line.Split("`t")
-                "`t`t" + $f[1]
-                if ($f[2]) {
-                    $n = $f[2].Split('|')
-                    for ($j = 0; $j + 2 -lt $n.Count; $j += 3) { $n[$j + 2] + "`t" + $n[$j + 1] + "`t" + $f[1] + $sep + $n[$j] }
-                }
-            }
-            Set-Content -LiteralPath "$base.idx.tmp" -Value $paths -Encoding UTF8
-            Move-Item -LiteralPath "$base.idx.tmp" -Destination "$base.idx" -Force
+            & $save $new $null
+            Remove-Item -LiteralPath "$base.partial" -Force -ErrorAction SilentlyContinue
             $oldBase = Join-Path $DataDir ('idx_' + $name)
             Remove-Item -LiteralPath "$oldBase.idx", "$oldBase.state" -Force -ErrorAction SilentlyContinue
         }
@@ -311,7 +350,7 @@ function global:Get-PSProfileIndexState {
     $limit = (Get-Date).AddHours(-24)
     foreach ($r in $global:PSProfileRoots) {
         $i = Get-Item -LiteralPath "$($r.Base).idx" -ErrorAction SilentlyContinue
-        if (-not $i -or $i.LastWriteTime -lt $limit) { return 'old' }
+        if (-not $i -or $i.LastWriteTime -lt $limit -or (Test-Path -LiteralPath "$($r.Base).partial")) { return 'old' }
     }
     ''
 }
@@ -355,7 +394,8 @@ function global:Find-PSProfileFile {
         [string[]]$Ext,
         [string]$Changed,
         [string]$Size,
-        [switch]$Meta
+        [switch]$Meta,
+        [int]$Limit = 0
     )
     $filter = $Ext -or $Changed -or $Size
     $extRx = ''
@@ -377,7 +417,12 @@ function global:Find-PSProfileFile {
     $unc = ConvertTo-PSProfileUnc $typed
     $root = Find-PSProfileRoot $unc
     if (-not $root) {
-        foreach ($i in @(Get-ChildItem -LiteralPath $typed -Recurse -Force -File:$filter -ErrorAction SilentlyContinue)) {
+        # -Limit stops the scan after that many items, so a big folder does not freeze the window.
+        $take = [int]::MaxValue
+        if ($Limit -gt 0) { $take = $Limit }
+        $scan = @(Get-ChildItem -LiteralPath $typed -Recurse -Force -File:$filter -ErrorAction SilentlyContinue | Select-Object -First $take)
+        if ($Limit -gt 0 -and $scan.Count -ge $Limit) { Write-Warning "fd: stopped after $Limit items. Give a smaller folder." }
+        foreach ($i in $scan) {
             if ($i.Name -notmatch $Pattern) { continue }
             if ($extRx -and $i.Name -notmatch $extRx) { continue }
             if ($since -and $i.LastWriteTimeUtc.Ticks -lt [long]$since) { continue }
@@ -683,7 +728,7 @@ function global:fzf {
             if ($prev.Count -gt $rows) { $rows = $prev.Count }
             for ($i = 0; $i -lt $rows; $i++) {
                 if ($i -lt $top.Count) {
-                    Write-Host ('{0,3} ' -f ($i + 1)) -ForegroundColor Cyan -NoNewline
+                    Write-Host ('{0,3} ' -f ('#' + ($i + 1))) -ForegroundColor Cyan -NoNewline
                     Write-Host (Format-PSProfileFit $top[$i] ($lw - 4) -End:($top[$i] -match '[\\/]')) -NoNewline
                 } else {
                     Write-Host (''.PadRight($lw)) -NoNewline
@@ -702,14 +747,14 @@ function global:fzf {
             }
         } else {
             for ($i = 0; $i -lt $top.Count; $i++) {
-                Write-Host ('{0,3} ' -f ($i + 1)) -ForegroundColor Cyan -NoNewline
+                Write-Host ('{0,3} ' -f ('#' + ($i + 1))) -ForegroundColor Cyan -NoNewline
                 Write-Host ($top[$i] -replace '\s*[\r\n]+\s*', ' ')
             }
         }
-        $r = Read-Host 'Number to pick, text to filter, Enter to quit'
+        $r = Read-Host 'Type #number to pick, text to filter, Enter to quit'
         if (-not $r) { return }
-        if ($r -match '^\d+$' -and [int]$r -ge 1 -and [int]$r -le $top.Count) {
-            $pick = $top[[int]$r - 1]
+        if ($r -match '^#(\d+)$' -and [int]$Matches[1] -ge 1 -and [int]$Matches[1] -le $top.Count) {
+            $pick = $top[[int]$Matches[1] - 1]
             for ($i = 0; $i -lt $texts.Count; $i++) { if ($texts[$i] -ceq $pick) { return $items[$i] } }
         }
         $Query = $r
@@ -773,9 +818,9 @@ function global:Get-PSProfileZ([string[]]$Terms) {
     } | Sort-Object Score -Descending | ForEach-Object { $_.Path }
 }
 
-# A dead entry is removed only when a jump to it fails.
+# A jump raises the rank of the folder. A dead entry is removed only when a jump to it fails.
 function global:Enter-PSProfileZ([string]$Path) {
-    try { Set-Location -LiteralPath $Path -ErrorAction Stop; return $true }
+    try { Set-Location -LiteralPath $Path -ErrorAction Stop; Add-PSProfileZ (Get-Location).ProviderPath; return $true }
     catch { Remove-PSProfileZ $Path; Write-Warning "z: removed dead entry '$Path'."; return $false }
 }
 
@@ -1004,7 +1049,7 @@ function global:bat {
 
 # ---------------------------------------------------------------- du
 
-# Folder sizes as a tree, largest first. Piped output is objects with Size (bytes) and Path.
+# Folder sizes as a tree, largest first. Under ShareRoots it reads the index. Piped output is objects with Size (bytes) and Path.
 function global:du {
     param(
         [Parameter(Position = 0)][string]$Path = '.',
@@ -1018,7 +1063,18 @@ function global:du {
     $size = @{ $top = [long]0 }
     $kids = @{ $top = @() }
     $own = @{}
-    foreach ($i in @(Get-ChildItem -LiteralPath $top -Recurse -Force -ErrorAction SilentlyContinue)) {
+    # Under ShareRoots the sizes come from the index, not from a scan of the network.
+    $entries = $null
+    if (Find-PSProfileRoot (ConvertTo-PSProfileUnc $top)) {
+        $entries = @(Find-PSProfileFile -Path $top -Meta | ForEach-Object {
+            $f = $_.Split("`t")
+            New-Object PSObject -Property @{ FullName = $f[2]; PSIsContainer = (-not $f[1]); Length = [long]('0' + $f[1]) }
+        })
+    } else {
+        $entries = @(Get-ChildItem -LiteralPath $top -Recurse -Force -ErrorAction SilentlyContinue)
+    }
+    foreach ($i in $entries) {
+        if ($i.FullName -eq $top) { continue }
         $parent = $i.FullName.Substring(0, $i.FullName.LastIndexOf($sep))
         if (-not $parent) { $parent = $sep }
         if ($i.PSIsContainer) {
@@ -1137,7 +1193,7 @@ $global:PSProfileTldr = [ordered]@{
     'rgi'          = 'Content search in the picker. A pick opens the file.',
                      'rgi budget -Office  # Pick a match. The preview shows the lines around it.'
     'fzf'          = 'Pick an item from a list. Type text to filter. The preview shows item 1.',
-                     'fd report | fzf  # Pick a file. Type a number to pick it.',
+                     'fd report | fzf  # Pick a file. Type #2 to pick item 2.',
                      'Get-Process | fzf  # Pick any object'
     'br'           = 'Browse folders in the picker. A folder enters it, a file opens it.',
                      'br  # Browse the current folder',
@@ -1201,7 +1257,7 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     Set-PSReadLineKeyHandler -Chord Ctrl+t -BriefDescription PickFile -Description 'Pick a file under the current folder and copy its path' -ScriptBlock {
         Write-Host ''
         # Folder lines in -Meta output start with a tab.
-        $pick = @(Find-PSProfileFile -Meta) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
+        $pick = @(Find-PSProfileFile -Meta -Limit 20000) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
         if ($pick) {
             if ($pick -match "[\s'`$&()\[\]{};,@#]") { $pick = "'" + ($pick -replace "'", "''") + "'" }
             Set-Clipboard -Value $pick

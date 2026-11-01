@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-01
+
+### Changed
+
+- The picker takes `#12` as a pick of item 12. A plain number now filters the list, so you can search for a small number.
+- `z` and `zi` record the jump, so the rank of the folder rises.
+- `du` under `$ShareRoots` reads the sizes from the index, not from a scan of the network.
+- Ctrl+T outside `$ShareRoots` stops the scan after 20000 items and shows a warning.
+
+### Fixed
+
+- The index build keeps the old index when a root is not reachable. It keeps the old lines of a folder that it cannot read.
+- The index build saves its progress every 2 minutes. A closed window no longer loses the work. The index is `old` until a build ends.
+- Reading an Office file is faster, because the progress bar of `Expand-Archive` is off.
+
 ## [1.1.0] - 2026-11-01
 
 ### Added
