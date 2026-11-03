@@ -65,13 +65,14 @@ If PowerShell does not load the profile, run `Get-ExecutionPolicy` to check the 
 
 ## Share roots
 
-The `fd` command uses a file index for network shares and mapped drives. Set the folders to index in `$global:ShareRoots`, near the top of the profile:
+The `fd` command uses a file index for network shares and mapped drives. Set the folders to index in the `$global:ShareRoots` setting at the top of the profile:
 
 ```powershell
 $global:ShareRoots = @('S:\Finance', '\\fileserver\public')
 ```
 
 - Mapped drive letters are allowed. The profile converts them to the UNC path that Windows shows for the drive.
+- The profile checks `$ShareRoots` at load. An entry that is not a non-empty string, or a drive letter that is not a mapped network drive, gives a warning that starts with `$ShareRoots:` and shows the example `'S:\Finance'`. The profile skips an entry that is not a non-empty string.
 - Run `Update-Index` to build or refresh the index for all share roots.
 - Run `Update-Index 'S:\Finance\2026'` to refresh one folder under a share root.
 - At startup, the profile starts a background index job when the index is older than 24 hours. The prompt shows `[index building]` or `[index old]` when this applies.
@@ -102,6 +103,16 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
 - The picker uses `Read-Host`. Type text and press Enter to filter, or type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
+
+## Check
+
+Run the check before you change the profile. It needs Nix and a network connection for the first run:
+
+```
+nix shell nixpkgs#powershell nixpkgs#git -c pwsh -NoProfile -File check.ps1
+```
+
+The check parses the files, bans comments, runs PSScriptAnalyzer with the rules for PowerShell 5.1, finds unused functions, runs `tests.ps1` in ConstrainedLanguage mode with strict mode, and replays the tests on `origin/main` and on your files. The replay fails when an output differs.
 
 ## Release
 

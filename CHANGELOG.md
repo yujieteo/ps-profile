@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `check.ps1` and `tests.ps1` check the profile: parse, no comments, PSScriptAnalyzer, unused functions, tests in ConstrainedLanguage mode with strict mode, and a replay of the tests against `origin/main`.
+
+### Changed
+
+- The picker and the helpers read optional properties of an item safely, so they work in strict mode.
+- `$global:PSProfileVersion` holds the profile version.
+- The profile checks `$ShareRoots` at load. It warns about an entry that is not a non-empty string or not on a mapped network drive, and it skips an entry that is not a non-empty string.
+
 ## [1.2.0] - 2026-11-01
 
 ### Changed
