@@ -15,6 +15,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The picker and the helpers read optional properties of an item safely, so they work in strict mode.
 - `$global:PSProfileVersion` holds the profile version.
+- The profile checks `$ShareRoots` at load. It warns about an entry that is not a non-empty string or not on a mapped network drive, and it skips an entry that is not a non-empty string.
 
 ## [1.2.0] - 2026-11-01
 

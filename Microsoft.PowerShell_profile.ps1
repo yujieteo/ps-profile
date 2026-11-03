@@ -202,16 +202,29 @@ function global:ConvertFrom-PSProfileOffice([string]$Path) {
     }
 }
 
-$global:PSProfileRoots = @(foreach ($r in $global:ShareRoots) {
-    $unc = ConvertTo-PSProfileUnc ($r.TrimEnd('\', '/'))
-    $sep = '\'
-    if ($unc.StartsWith('/')) { $sep = '/' }
-    @{
-        Unc  = $unc
-        Sep  = $sep
-        Base = Join-Path $global:PSProfileDataDir ('idx2_' + ($unc -replace '[^A-Za-z0-9]+', '_'))
+function global:ConvertTo-PSProfileRoot {
+    [OutputType([hashtable])]
+    param([object[]]$ShareRoots)
+    foreach ($r in $ShareRoots) {
+        if ($r -isnot [string] -or -not $r.Trim()) {
+            Write-Warning ("`$ShareRoots: '{0}' is not a folder path. Use a UNC path or a mapped drive folder, for example 'S:\Finance'." -f $r)
+            continue
+        }
+        $unc = ConvertTo-PSProfileUnc ($r.TrimEnd('\', '/'))
+        if ($unc -match '^[A-Za-z]:') {
+            Write-Warning ("`$ShareRoots: '{0}' is not on a mapped network drive, so the index uses the path as typed. Example of a mapped drive folder: 'S:\Finance'." -f $r)
+        }
+        $sep = '\'
+        if ($unc.StartsWith('/')) { $sep = '/' }
+        @{
+            Unc  = $unc
+            Sep  = $sep
+            Base = Join-Path $global:PSProfileDataDir ('idx2_' + ($unc -replace '[^A-Za-z0-9]+', '_'))
+        }
     }
-})
+}
+
+$global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
 
 $global:PSProfileIndexBuilder = {
     param([string]$RootList, [string]$DataDir, [string]$Start, [int]$PauseMs, [int]$MaxAgeHours)
@@ -675,7 +688,6 @@ function global:fzf {
         }
         $t
     })
-    $previewRank = 0
     $width = 0
     try { $width = $Host.UI.RawUI.WindowSize.Width } catch { $width = 0 }
     while ($true) {
@@ -720,7 +732,7 @@ function global:fzf {
         $prev = @()
         if ($top.Count -and $width -ge 60) {
             for ($i = 0; $i -lt $texts.Count; $i++) {
-                if ($texts[$i] -ceq $top[$previewRank]) { $prev = @(Get-PSProfilePreview $items[$i] 20); break }
+                if ($texts[$i] -ceq $top[0]) { $prev = @(Get-PSProfilePreview $items[$i] 20); break }
             }
         }
         Write-Host ('{0} of {1} match' -f $total, $texts.Count) -ForegroundColor DarkGray

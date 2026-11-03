@@ -70,7 +70,7 @@ $script:Failures = @()
 
 function Test-Case([string]$Name, [scriptblock]$Body) {
     try {
-        $result = $result = & $Body $Body 3>$null
+        $result = & $Body 3>$null
         $status = 'pass'
     } catch {
         $result = $_.Exception.Message
@@ -131,7 +131,7 @@ Test-Case 'the profile loads in ConstrainedLanguage mode' {
     Expect "$($ExecutionContext.SessionState.LanguageMode)" 'ConstrainedLanguage'
 }
 
-Test-Case 'a command typed at the prompt writes to the host only without assignment or parentheses' {
+Test-Case 'output goes to the host only for a command typed last in the pipeline, and = or ( before the command means the caller wants objects' {
     $typed = @{ CommandOrigin = 'Runspace'; PipelinePosition = 1; PipelineLength = 1; Line = 'fd x'; OffsetInLine = 1 }
     $result = [ordered]@{
         typed      = Test-PSProfileToHost (ConvertTo-Obj $typed)
@@ -146,6 +146,19 @@ Test-Case 'a command typed at the prompt writes to the host only without assignm
     Expect $result.piped $false
     Expect $result.fromScript $false
     $result
+}
+
+Test-Case 'the profile keeps its data in the ps-profile folder under LOCALAPPDATA' {
+    Expect $global:PSProfileDataDir (Join-Path $Data 'ps-profile')
+    Expect (Test-Path -LiteralPath $global:PSProfileDataDir -PathType Container) $true
+}
+
+Test-Case 'a share root that is not a non-empty string or not on a mapped network drive gives a warning that names $ShareRoots' {
+    $warnings = @(ConvertTo-PSProfileRoot @('', 5, 'Q:\nowhere', "$Tree/") 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { "$_" })
+    $roots = @(ConvertTo-PSProfileRoot @('', 5, 'Q:\nowhere', "$Tree/") 3>$null)
+    Expect @($roots | ForEach-Object { $_.Unc }) @('Q:\nowhere', $Tree)
+    Expect @($warnings | Where-Object { $_ -like '$ShareRoots:*S:\Finance*' }).Count 3
+    [ordered]@{ warnings = $warnings; seps = @($roots | ForEach-Object { $_.Sep }) }
 }
 
 Test-Case 'a full path resolves an existing folder and keeps a missing path as typed' {
@@ -548,7 +561,7 @@ Test-Case 'the history is newest first with each command once and a backtick joi
     Expect $result @('echo hi', 'git status', "ls `nfoo")
 }
 
-Test-Case 'tldr lists the commands and every example has the separator' {
+Test-Case 'a tldr entry is the purpose, then examples in the form command  # what it does' {
     $list = @(tldr)
     foreach ($name in $global:PSProfileTldr.Keys) {
         foreach ($example in @($global:PSProfileTldr[$name] | Select-Object -Skip 1)) {

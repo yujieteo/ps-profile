@@ -95,25 +95,29 @@ function Test-Version {
     if ($profileVersion -ne $changelogVersion) { Add-Failure "version: profile $profileVersion but changelog $changelogVersion" }
 }
 
-function Invoke-Tests([string]$ProfilePath, [string]$Name, [bool]$Strict) {
+function Invoke-Tests([string]$ProfilePath, [string]$Name, [bool]$Strict, [bool]$AllowFail) {
     $out = Join-Path $tmp "$Name.txt"
     $work = Join-Path $tmp 'work'
     $arguments = @('-NoProfile', '-File', (Join-Path $Root 'tests.ps1'), '-ProfilePath', $ProfilePath, '-WorkDir', $work, '-OutFile', $out)
     if ($Strict) { $arguments += '-Strict' }
     $pwsh = (Get-Process -Id $PID).Path
     $log = & $pwsh @arguments 3>$null
-    if ($LASTEXITCODE -ne 0) { Add-Failure ("tests ($Name): " + ($log -join ' ')) }
+    if ($LASTEXITCODE -ne 0 -and -not $AllowFail) { Add-Failure ("tests ($Name): " + ($log -join ' ')) }
     $out
 }
 
 function Test-Replay {
     $base = Join-Path $tmp 'base.ps1'
     $baseText = & git -C $Root show "${BaseRef}:Microsoft.PowerShell_profile.ps1"
-    if ($LASTEXITCODE -ne 0) { Add-Failure "replay: cannot read $BaseRef"; return }
+    if ($LASTEXITCODE -ne 0 -and -not $AllowFail) { Add-Failure "replay: cannot read $BaseRef"; return }
     Set-Content -LiteralPath $base -Value $baseText -Encoding utf8NoBOM
-    $baseOut = Invoke-Tests -ProfilePath $base -Name 'replay-base' -Strict $false
-    $branchOut = Invoke-Tests -ProfilePath $ProfileFile -Name 'replay-branch' -Strict $false
-    $diff = @(Compare-Object (Get-Content -LiteralPath $baseOut) (Get-Content -LiteralPath $branchOut))
+    $baseOut = Invoke-Tests -ProfilePath $base -Name 'replay-base' -Strict $false -AllowFail $true
+    $branchOut = Invoke-Tests -ProfilePath $ProfileFile -Name 'replay-branch' -Strict $false -AllowFail $false
+    $baseLines = @(Get-Content -LiteralPath $baseOut)
+    $newCases = @($baseLines | Where-Object { ($_ -split "`t")[1] -eq 'fail' } | ForEach-Object { ($_ -split "`t")[0] })
+    $baseKept = @($baseLines | Where-Object { $newCases -notcontains ($_ -split "`t")[0] })
+    $branchKept = @(Get-Content -LiteralPath $branchOut | Where-Object { $newCases -notcontains ($_ -split "`t")[0] })
+    $diff = @(Compare-Object $baseKept $branchKept)
     foreach ($d in $diff) {
         $name = ($d.InputObject -split "`t")[0]
         Add-Failure ("replay: {0} output differs from {1} ({2})" -f $name, $BaseRef, $d.SideIndicator)
@@ -127,7 +131,7 @@ Test-Analyzer @($ProfileFile) ($RuleSettings + $CompatibilityRules)
 Test-Analyzer $ToolFiles $RuleSettings
 Test-DeadFunction
 Test-Version
-$null = Invoke-Tests -ProfilePath $ProfileFile -Name 'strict' -Strict $true
+$null = Invoke-Tests -ProfilePath $ProfileFile -Name 'strict' -Strict $true -AllowFail $false
 Test-Replay
 
 if ($failures.Count) {
