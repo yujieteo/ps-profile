@@ -103,6 +103,16 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - The picker uses `Read-Host`. Type text and press Enter to filter, or type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
+## Check
+
+Run the check before you change the profile. It needs Nix and a network connection for the first run:
+
+```
+nix shell nixpkgs#powershell nixpkgs#git -c pwsh -NoProfile -File check.ps1
+```
+
+The check parses the files, bans comments, runs PSScriptAnalyzer with the rules for PowerShell 5.1, finds unused functions, runs `tests.ps1` in ConstrainedLanguage mode with strict mode, and replays the tests on `origin/main` and on your files. The replay fails when an output differs.
+
 ## Release
 
 The current version is 1.2.0. See [CHANGELOG.md](CHANGELOG.md).
