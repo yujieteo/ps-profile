@@ -109,7 +109,7 @@ function Invoke-Tests([string]$ProfilePath, [string]$Name, [bool]$Strict, [bool]
 function Test-Replay {
     $base = Join-Path $tmp 'base.ps1'
     $baseText = & git -C $Root show "${BaseRef}:Microsoft.PowerShell_profile.ps1"
-    if ($LASTEXITCODE -ne 0 -and -not $AllowFail) { Add-Failure "replay: cannot read $BaseRef"; return }
+    if ($LASTEXITCODE -ne 0) { Add-Failure "replay: cannot read $BaseRef"; return }
     Set-Content -LiteralPath $base -Value $baseText -Encoding utf8NoBOM
     $baseOut = Invoke-Tests -ProfilePath $base -Name 'replay-base' -Strict $false -AllowFail $true
     $branchOut = Invoke-Tests -ProfilePath $ProfileFile -Name 'replay-branch' -Strict $false -AllowFail $false
