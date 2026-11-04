@@ -4,7 +4,9 @@
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/scripting/windows-powershell/install/windows-powershell-system-requirements)
 [![Latest release](https://img.shields.io/github/v/release/yujieteo/ps-profile)](https://github.com/yujieteo/ps-profile/releases/latest)
 
-A PowerShell profile for Windows PowerShell 5.1 on computers that use ConstrainedLanguage mode. It adds commands to find files, search content, show files and move between folders. It uses only cmdlets and core types.
+This profile adds commands to find files, search content, show files, and move folders, using only cmdlets and core types.
+
+It is for Windows PowerShell 5.1 on computers that use ConstrainedLanguage mode.
 
 ## What it does
 
@@ -23,7 +25,7 @@ The profile adds these commands:
 | `tldr` | Show examples for the profile commands. Run `tldr` with no argument to list the commands. |
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
 | `cd` | Change folder. Records the visit for `z`. |
-| `delta` | Show the differences between two files. Office files are compared as text. |
+| `delta` | Show the differences between two files. The command compares Office files as text. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
 | `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. |
@@ -71,8 +73,8 @@ The `fd` command uses a file index for network shares and mapped drives. Set the
 $global:ShareRoots = @('S:\Finance', '\\fileserver\public')
 ```
 
-- Mapped drive letters are allowed. The profile converts them to the UNC path that Windows shows for the drive.
-- The profile checks `$ShareRoots` at load. An entry that is not a non-empty string, or a drive letter that is not a mapped network drive, gives a warning that starts with `$ShareRoots:` and shows the example `'S:\Finance'`. The profile skips an entry that is not a non-empty string.
+- You can use mapped drive letters. The profile converts them to the UNC path that Windows shows for the drive.
+- The profile checks `$ShareRoots` at load. An entry that is not a non-empty string, or a drive letter that is not a mapped network drive, gives a warning. The warning starts with `$ShareRoots:` and shows the example `'S:\Finance'`. The profile skips an entry that is not a non-empty string.
 - Run `Update-Index` to build or refresh the index for all share roots.
 - Run `Update-Index 'S:\Finance\2026'` to refresh one folder under a share root.
 - At startup, the profile starts a background index job when the index is older than 24 hours. The prompt shows `[index building]` or `[index old]` when this applies.
@@ -87,7 +89,7 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 
 - `idx2_*.idx` and `idx2_*.state`: the file index for each share root.
 - `index.lock`: exists only while an index build runs.
-- `idx2_*.partial`: exists while an index build is not finished. The index is `old` until the build ends.
+- `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
@@ -98,21 +100,21 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 
 - The commands are PowerShell code. They do not call external programs such as `rg.exe` or `fzf.exe`.
 - `ep` starts `notepad.exe`.
-- `rg -Office`, `bat`, `delta` and the preview read Office files by unpacking the file and reading its XML. Legacy `.doc`, `.xls` and `.ppt` files are not read.
+- `rg -Office`, `bat`, `delta` and the preview read Office files. They unpack the file and read its XML. The commands do not read legacy `.doc`, `.xls` and `.ppt` files.
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
-- The picker uses `Read-Host`. Type text and press Enter to filter, or type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
+- The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
 ## Check
 
 Run the check before you change the profile. It needs Nix and a network connection for the first run:
 
-```
+```text
 nix shell nixpkgs#powershell nixpkgs#git -c pwsh -NoProfile -File check.ps1
 ```
 
-The check parses the files, bans comments, runs PSScriptAnalyzer with the rules for PowerShell 5.1, finds unused functions, runs `tests.ps1` in ConstrainedLanguage mode with strict mode, and replays the tests on `origin/main` and on your files. The replay fails when an output differs.
+The check parses the files, bans comments, and runs PSScriptAnalyzer with the rules for PowerShell 5.1. It finds unused functions and runs `tests.ps1` in ConstrainedLanguage mode with strict mode. It replays the tests on `origin/main` and on your files. The replay fails when an output differs.
 
 ## Release
 
@@ -127,4 +129,4 @@ After the change merges to the default branch:
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+This project uses the MIT License. See [LICENSE](LICENSE).
