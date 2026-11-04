@@ -4,7 +4,9 @@
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/scripting/windows-powershell/install/windows-powershell-system-requirements)
 [![Latest release](https://img.shields.io/github/v/release/yujieteo/ps-profile)](https://github.com/yujieteo/ps-profile/releases/latest)
 
-This profile adds commands to find files, search content and move between folders in Windows PowerShell 5.1 ConstrainedLanguage mode.
+This profile adds commands to find files, search content, show files and move between folders, and it uses only cmdlets and core types.
+
+It is for Windows PowerShell 5.1 on computers that use ConstrainedLanguage mode.
 
 ## What it does
 
