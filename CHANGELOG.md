@@ -56,7 +56,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added in 1.0.0
 
 - Initial release of the profile for Windows PowerShell 5.1 in ConstrainedLanguage mode.
-- Commands for finding files (`fd`), searching content (`rg`), picking items (`fzf`), and jumping to folders (`z`, `zi`).
+- Commands to find files (`fd`), search content (`rg`), pick items (`fzf`), and jump to folders (`z`, `zi`).
 - File index for share roots, built with `Update-Index`.
 - Office file search in `rg` with `-Office`, and text comparison in `delta`.
-- Helper commands for listing, paths, the clipboard, and text files.
+- Helper commands to list files, to handle paths, to use the clipboard, and to work with text files.

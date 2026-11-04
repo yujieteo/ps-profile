@@ -100,7 +100,7 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 
 - The commands are PowerShell code. They do not call external programs such as `rg.exe` or `fzf.exe`.
 - `ep` starts `notepad.exe`.
-- `rg -Office`, `bat`, `delta` and the preview read Office files by unpacking the file and reading its XML. The commands do not read legacy `.doc`, `.xls` and `.ppt` files.
+- `rg -Office`, `bat`, `delta` and the preview read Office files. They unpack the file and read its XML. The commands do not read legacy `.doc`, `.xls` and `.ppt` files.
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
 - The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
