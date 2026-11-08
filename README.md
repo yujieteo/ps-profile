@@ -14,9 +14,9 @@ The profile adds these commands:
 
 | Command | Purpose |
 |---|---|
-| `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. Uses the file index for folders under `ShareRoots`. |
+| `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. In a Git repository, files that `.gitignore` ignores show only with `-I`. Uses the file index for folders under `ShareRoots`. |
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. |
-| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` or `-u` to include them. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
@@ -112,7 +112,8 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
 - The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
-- `bat` colors each line by itself, so a comment over many lines shows only part of its color. It colors files of up to 5000 lines.
+- `bat` colors files of up to 5000 lines.
+- `fd` and `rg` read `.gitignore` files and `.git/info/exclude`. They do not read the global Git ignore file.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
 ## Release

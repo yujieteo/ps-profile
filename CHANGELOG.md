@@ -20,11 +20,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Tab completes `z` and `zi` folders and `tldr` pages.
 - `bat` has basic syntax colors. `du` has bars. `tldr` has colors.
 - `delta -s` shows two columns. `head -5` and `tail -5` work.
+- `fd` and `rg` skip the files that `.gitignore` ignores, and do not enter ignored folders. Use `fd -I` or `rg -u` to include them.
+- `bat` colors comments over many lines.
 
 ### Changed
 
 - `rg` and `fd` use smart case. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Before this change, `rg` was always case-sensitive and `fd` always ignored case.
 - `fd` hides hidden files and dot files. Use `-H` to show them.
+- `rg` skips dot files. Use `-Hidden` to search them.
 - The picker shows up to 50 rows when the window is tall enough.
 - The picker and the helpers read optional properties of an item safely, so they work in strict mode.
 - `$global:PSProfileVersion` holds the profile version.

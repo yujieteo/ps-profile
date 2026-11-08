@@ -417,6 +417,98 @@ function global:Update-Index {
     & $global:PSProfileIndexBuilder ($roots -join "`n") $global:PSProfileDataDir $start 0 0
 }
 
+function global:ConvertTo-PSProfileIgnoreRule([string]$Line, [string]$Base) {
+    $t = $Line.TrimEnd()
+    if (-not $t -or $t.StartsWith('#')) { return }
+    $negate = $t.StartsWith('!')
+    if ($negate) { $t = $t.Substring(1) }
+    $t = $t -replace '^\\(?=[#!])', ''
+    $dirOnly = $t.EndsWith('/')
+    $t = $t.TrimEnd('/')
+    if (-not $t) { return }
+    $anchored = $t.Contains('/')
+    $t = $t.TrimStart('/')
+    $parts = foreach ($m in [regex]::Matches($t, '\*\*/|/\*\*$|\*\*|\*|\?|\[[^\]]*\]|\[|[^*?\[/]+|/')) {
+        $v = $m.Value
+        if ($v -eq '**/') { '(?:.*/)?' }
+        elseif ($v -eq '/**') { '/.*' }
+        elseif ($v -eq '**') { '.*' }
+        elseif ($v -eq '*') { '[^/]*' }
+        elseif ($v -eq '?') { '[^/]' }
+        elseif ($v.Length -gt 2 -and $v.StartsWith('[')) { $v -replace '^\[!', '[^' }
+        else { [regex]::Escape($v) }
+    }
+    $prefix = '(?i)(?:^|/)'
+    if ($anchored) { $prefix = '(?i)^' }
+    @{ Base = $Base; Rx = $prefix + (@($parts) -join '') + '$'; Negate = [bool]$negate; DirOnly = [bool]$dirOnly }
+}
+
+function global:Get-PSProfileIgnoreFile([string]$File, [string]$Base) {
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return }
+    foreach ($line in @(Get-Content -LiteralPath $File -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        ConvertTo-PSProfileIgnoreRule $line $Base
+    }
+}
+
+function global:Get-PSProfileRepoRules([string]$Root) {
+    $above = @()
+    $dir = $Root
+    $top = ''
+    while ($dir) {
+        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { $top = $dir; break }
+        $dir = Split-Path -Parent $dir
+        if ($dir) { $above = @($dir) + $above }
+    }
+    if (-not $top) { return @{ InRepo = $false; Rules = @() } }
+    $rules = @(Get-PSProfileIgnoreFile (Join-Path (Join-Path (Join-Path $top '.git') 'info') 'exclude') $top)
+    foreach ($d in $above) { $rules += @(Get-PSProfileIgnoreFile (Join-Path $d '.gitignore') $d) }
+    @{ InRepo = $true; Rules = $rules }
+}
+
+function global:Test-PSProfileIgnored {
+    [OutputType([bool])]
+    param([string]$FullName, [bool]$IsDir, [object[]]$Rules)
+    $ignored = $false
+    foreach ($r in $Rules) {
+        if ($ignored -ne $r.Negate) { continue }
+        if ($r.DirOnly -and -not $IsDir) { continue }
+        $rel = $FullName.Substring($r.Base.Length).TrimStart('\', '/') -replace '\\', '/'
+        if ($rel -match $r.Rx) { $ignored = -not $r.Negate }
+    }
+    $ignored
+}
+
+function global:Get-PSProfileTree {
+    param([string]$Root, [switch]$SkipHidden, [switch]$UseIgnore)
+    $repo = @{ InRepo = $false; Rules = @() }
+    if ($UseIgnore) { $repo = Get-PSProfileRepoRules $Root }
+    $queue = @{}
+    $head = 0
+    $tail = 0
+    $queue[$tail++] = @{ Dir = $Root; Rules = $repo.Rules }
+    while ($head -lt $tail) {
+        $entry = $queue[$head]
+        $queue.Remove($head)
+        $head++
+        $kids = @(Get-ChildItem -LiteralPath $entry.Dir -Force -ErrorAction SilentlyContinue)
+        $rules = @($entry.Rules)
+        if ($repo.InRepo) {
+            foreach ($k in $kids) {
+                if ($k.Name -eq '.gitignore' -and -not $k.PSIsContainer) { $rules += @(Get-PSProfileIgnoreFile $k.FullName $entry.Dir) }
+            }
+        }
+        foreach ($k in $kids) {
+            if ($SkipHidden -and ($k.Name.StartsWith('.') -or ([int]$k.Attributes -band 2))) { continue }
+            if ($repo.InRepo) {
+                if ($k.Name -eq '.git') { continue }
+                if ($rules.Count -and (Test-PSProfileIgnored $k.FullName ([bool]$k.PSIsContainer) $rules)) { continue }
+            }
+            $k
+            if ($k.PSIsContainer -and -not ([int]$k.Attributes -band 1024)) { $queue[$tail++] = @{ Dir = $k.FullName; Rules = $rules } }
+        }
+    }
+}
+
 function global:Find-PSProfileFile {
     [CmdletBinding()]
     param(
@@ -428,6 +520,7 @@ function global:Find-PSProfileFile {
         [string]$Type,
         [switch]$SkipHidden,
         [switch]$SmartCase,
+        [switch]$UseIgnore,
         [switch]$Meta,
         [int]$Limit = 0
     )
@@ -457,7 +550,11 @@ function global:Find-PSProfileFile {
     if (-not $root) {
         $take = [int]::MaxValue
         if ($Limit -gt 0) { $take = $Limit }
-        $scan = @(Get-ChildItem -LiteralPath $typed -Recurse -Force:(-not $SkipHidden) -File:$onlyFiles -Directory:$onlyDirs -ErrorAction SilentlyContinue | Select-Object -First $take)
+        $scan = @(if ($UseIgnore) {
+            Get-PSProfileTree $typed -SkipHidden:$SkipHidden -UseIgnore | Where-Object { -not ($onlyFiles -and $_.PSIsContainer) -and -not ($onlyDirs -and -not $_.PSIsContainer) } | Select-Object -First $take
+        } else {
+            Get-ChildItem -LiteralPath $typed -Recurse -Force:(-not $SkipHidden) -File:$onlyFiles -Directory:$onlyDirs -ErrorAction SilentlyContinue | Select-Object -First $take
+        })
         $scanLength = $typed.TrimEnd('\', '/').Length
         if ($Limit -gt 0 -and $scan.Count -ge $Limit) { Write-Warning "fd: stopped after $Limit items. Give a smaller folder." }
         foreach ($i in $scan) {
@@ -509,10 +606,11 @@ function global:fd {
         [string]$Changed,
         [string]$Size,
         [Alias('t')][ValidateSet('f', 'd', 'file', 'directory')][string]$Type,
-        [Alias('H')][switch]$Hidden
+        [Alias('H')][switch]$Hidden,
+        [Alias('I')][switch]$NoIgnore
     )
     $toHost = Test-PSProfileToHost $MyInvocation
-    $a = @{ Pattern = $Pattern; Path = $Path; Ext = $Ext; Changed = $Changed; Size = $Size; Type = $Type; SkipHidden = (-not $Hidden); SmartCase = $true }
+    $a = @{ Pattern = $Pattern; Path = $Path; Ext = $Ext; Changed = $Changed; Size = $Size; Type = $Type; SkipHidden = (-not $Hidden); SmartCase = $true; UseIgnore = (-not $NoIgnore) }
     if (-not $toHost) { Find-PSProfileFile @a; return }
     Find-PSProfileFile @a -Meta | ForEach-Object {
         $f = $_.Split("`t")
@@ -593,6 +691,8 @@ function global:rg {
         [Alias('w')][switch]$Word,
         [Alias('n')][switch]$LineNumber,
         [Alias('s')][switch]$CaseSensitive,
+        [Alias('u')][switch]$NoIgnore,
+        [switch]$Hidden,
         [int]$MaxSizeMB = 20,
         [switch]$Office
     )
@@ -685,7 +785,11 @@ function global:rg {
                 Write-Error "rg: refusing a whole-share content search of '$full'. Give a folder or pipe fd results."
                 return
             }
-            Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { & $search $_ }
+            if ($NoIgnore) {
+                Get-ChildItem -LiteralPath $full -Recurse -File -Force:$Hidden -ErrorAction SilentlyContinue | ForEach-Object { & $search $_ }
+            } else {
+                Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore | Where-Object { -not $_.PSIsContainer } | ForEach-Object { & $search $_ }
+            }
         }
         $piped = @{}
         $searchText = {
@@ -1179,11 +1283,11 @@ function global:delta {
 }
 
 $global:PSProfileSyntaxRules = @{
-    PowerShell = @{ Prefix = '(?i)'; Comment = '#.*$'; Keywords = 'begin|break|catch|class|continue|do|else|elseif|end|exit|filter|finally|for|foreach|function|if|in|param|process|return|switch|throw|try|until|while' }
-    Python     = @{ Prefix = ''; Comment = '#.*$'; Keywords = 'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield' }
+    PowerShell = @{ Prefix = '(?i)'; Comment = '#.*$'; Block = @{ '<#' = '#>' }; Keywords = 'begin|break|catch|class|continue|do|else|elseif|end|exit|filter|finally|for|foreach|function|if|in|param|process|return|switch|throw|try|until|while' }
+    Python     = @{ Prefix = ''; Comment = '#.*$'; Block = @{ '"""' = '"""'; "'''" = "'''" }; Keywords = 'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield' }
     Shell      = @{ Prefix = ''; Comment = '#.*$'; Keywords = 'case|do|done|elif|else|esac|exit|export|fi|for|function|if|in|local|return|then|until|while' }
-    CLike      = @{ Prefix = ''; Comment = '//.*$|/\*.*?\*/'; Keywords = 'async|await|bool|break|case|catch|char|class|const|continue|def|default|double|else|enum|export|extends|false|final|finally|float|fn|for|foreach|from|func|function|if|implements|import|in|int|interface|let|long|namespace|new|null|package|private|protected|public|return|static|string|struct|switch|this|throw|true|try|type|typeof|using|var|void|while' }
-    Sql        = @{ Prefix = '(?i)'; Comment = '--.*$'; Keywords = 'alter|and|as|asc|begin|by|case|create|delete|desc|distinct|drop|else|end|exists|from|group|having|in|index|inner|insert|into|is|join|left|like|limit|not|null|on|or|order|outer|right|select|set|table|then|union|update|values|when|where|with' }
+    CLike      = @{ Prefix = ''; Comment = '//.*$'; Block = @{ '/*' = '*/' }; Keywords = 'async|await|bool|break|case|catch|char|class|const|continue|def|default|double|else|enum|export|extends|false|final|finally|float|fn|for|foreach|from|func|function|if|implements|import|in|int|interface|let|long|namespace|new|null|package|private|protected|public|return|static|string|struct|switch|this|throw|true|try|type|typeof|using|var|void|while' }
+    Sql        = @{ Prefix = '(?i)'; Comment = '--.*$'; Block = @{ '/*' = '*/' }; Keywords = 'alter|and|as|asc|begin|by|case|create|delete|desc|distinct|drop|else|end|exists|from|group|having|in|index|inner|insert|into|is|join|left|like|limit|not|null|on|or|order|outer|right|select|set|table|then|union|update|values|when|where|with' }
     Config     = @{ Prefix = ''; Comment = '(?:^|\s)[#;].*$'; Keywords = 'false|no|null|off|on|true|yes' }
     Json       = @{ Prefix = ''; Comment = ''; Keywords = 'false|null|true' }
     Batch      = @{ Prefix = '(?i)'; Comment = '^\s*(?:rem\b|::).*$'; Keywords = 'call|cd|echo|else|exit|for|goto|if|in|not|set|setlocal|endlocal' }
@@ -1197,24 +1301,40 @@ $global:PSProfileSyntaxExt = @{
 }
 
 function global:Get-PSProfileSyntax {
-    [OutputType([string])]
     param([string]$Path)
     $language = $global:PSProfileSyntaxExt[[regex]::Match($Path, '\.[^.\\/]*$').Value.ToLower()]
-    if (-not $language) { return '' }
+    if (-not $language) { return $null }
     $rule = $global:PSProfileSyntaxRules[$language]
     $parts = @()
     if ($rule.Comment) { $parts += '(?<c>' + $rule.Comment + ')' }
+    if ($rule.Block) { $parts += '(?<b>' + ((@($rule.Block.Keys) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')' }
     $parts += '(?<s>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*'')'
     $parts += '(?<n>\b\d+(?:\.\d+)?\b)'
     $parts += '(?<k>\b(?:' + $rule.Keywords + ')\b)'
-    $rule.Prefix + ($parts -join '|')
+    @{ Rx = [regex]($rule.Prefix + ($parts -join '|')); Close = $rule.Block }
 }
 
-function global:Write-PSProfileSyntaxLine([string]$Line, [string]$Rx) {
+function global:Write-PSProfileSyntaxLine([string]$Line, [hashtable]$Syntax, [string]$Block) {
     $pos = 0
-    foreach ($m in [regex]::Matches($Line, $Rx)) {
-        if ($m.Length -eq 0) { continue }
+    while ($pos -lt $Line.Length) {
+        if ($Block) {
+            $end = $Line.IndexOf($Block, $pos)
+            $stop = $Line.Length
+            if ($end -ge 0) { $stop = $end + $Block.Length }
+            Write-Host $Line.Substring($pos, $stop - $pos) -ForegroundColor DarkGray -NoNewline
+            $pos = $stop
+            if ($end -ge 0) { $Block = '' }
+            continue
+        }
+        $m = $Syntax.Rx.Match($Line, $pos)
+        if (-not $m.Success -or $m.Length -eq 0) { break }
         if ($m.Index -gt $pos) { Write-Host $Line.Substring($pos, $m.Index - $pos) -NoNewline }
+        if ($m.Groups['b'].Success) {
+            $Block = $Syntax.Close[$m.Value]
+            Write-Host $m.Value -ForegroundColor DarkGray -NoNewline
+            $pos = $m.Index + $m.Length
+            continue
+        }
         $c = 'Cyan'
         if ($m.Groups['c'].Success) { $c = 'DarkGray' }
         elseif ($m.Groups['s'].Success) { $c = 'Green' }
@@ -1223,6 +1343,7 @@ function global:Write-PSProfileSyntaxLine([string]$Line, [string]$Rx) {
         $pos = $m.Index + $m.Length
     }
     Write-Host $Line.Substring($pos)
+    $Block
 }
 
 function global:bat {
@@ -1252,15 +1373,22 @@ function global:bat {
                 continue
             }
             Write-Host (Get-PSProfileFullPath $p) -ForegroundColor Magenta
-            $syntax = ''
+            $syntax = $null
+            $block = ''
             if ($lines.Count -le 5000) { $syntax = Get-PSProfileSyntax $p }
+            if ($syntax) {
+                for ($n = 1; $n -lt $from -and $n -le $lines.Count; $n++) { $block = Write-PSProfileSyntaxLine $lines[$n - 1] $syntax $block 6>$null }
+            }
             $fmt = '{0,' + ('' + $last).Length + '} '
             for ($n = $from; $n -le $last; $n++) {
                 Write-Host ($fmt -f $n) -ForegroundColor DarkGray -NoNewline
                 $ms = $null
                 if ($Pattern) { $ms = [regex]::Matches($lines[$n - 1], '(?i)' + $Pattern) }
-                if ($ms -and $ms.Count) { Write-PSProfileMatchLine $lines[$n - 1] $ms }
-                elseif ($syntax -and $lines[$n - 1].Length -le 2000) { Write-PSProfileSyntaxLine $lines[$n - 1] $syntax }
+                if ($ms -and $ms.Count) {
+                    if ($syntax) { $block = Write-PSProfileSyntaxLine $lines[$n - 1] $syntax $block 6>$null }
+                    Write-PSProfileMatchLine $lines[$n - 1] $ms
+                }
+                elseif ($syntax -and $lines[$n - 1].Length -le 2000) { $block = Write-PSProfileSyntaxLine $lines[$n - 1] $syntax $block }
                 else { Write-Host $lines[$n - 1] }
             }
         }
@@ -1392,6 +1520,7 @@ $global:PSProfileTldr = [ordered]@{
                      'fd -e docx,xlsx  # Files with these extensions',
                      'fd -t d report  # Folders only (-t f for files only)',
                      'fd -H config  # Also show hidden files and dot files',
+                     'fd -I build  # Also show files that .gitignore ignores',
                      'fd Report  # An upper-case letter makes the search case-sensitive',
                      'fd -Changed 30d  # Files changed in the last 30 days',
                      'fd -Size +1MB  # Files of 1 MB or more (-10KB for 10 KB or less)'
@@ -1406,6 +1535,8 @@ $global:PSProfileTldr = [ordered]@{
                      'rg -i Invoice -g *.txt  # Always ignore case, only .txt files',
                      'rg -v debug log.txt  # Lines that do not match',
                      'rg -w cat notes.txt  # Whole words only',
+                     'rg -u token  # Also search files that .gitignore ignores',
+                     'rg -Hidden token  # Also search hidden files and dot files',
                      'rg -A 2 -B 1 error log.txt  # 2 lines after and 1 before each match',
                      'ipconfig | rg -n IPv4  # Add line numbers to piped text',
                      'rg budget -Office  # Also search .docx, .xlsx and .pptx files',
