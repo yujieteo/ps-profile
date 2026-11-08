@@ -14,18 +14,18 @@ The profile adds these commands:
 
 | Command | Purpose |
 |---|---|
-| `fd` | Find files by name. Use `-Ext`, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Uses the file index for folders under `ShareRoots`. |
+| `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. Uses the file index for folders under `ShareRoots`. |
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. |
-| `rg` (alias `grep`) | Search file content or filter piped text. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
-| `bat` | Show a file with line numbers. Office files show as text. Use `-Range 100-200` to show some lines and `-Pattern` to highlight text. |
-| `du` | Show folder sizes as a tree, largest first. Use `-Depth` to change the number of levels. |
+| `bat` | Show a file with line numbers and basic syntax colors. Office files show as text. Use `-Range 100-200` to show some lines and `-Pattern` to highlight text. |
+| `du` | Show folder sizes as a tree with bars, largest first. Use `-Depth` to change the number of levels. |
 | `tldr` | Show examples for the profile commands. Run `tldr` with no argument to list the commands. |
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
 | `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
-| `delta` | Show the differences between two files. The command compares Office files as text. |
+| `delta` | Show the differences between two files. Use `-s` for side by side. The command compares Office files as text. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
 | `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. `wc` takes `-l`, `-w` and `-c`. `tail -f` shows new lines as they arrive. |
@@ -51,6 +51,10 @@ The preview needs a window width of 60 characters or more. The preview does not 
 | Ctrl+T | Pick a file under the current folder. The path goes to the clipboard. |
 
 After the pick, press Ctrl+V to insert the text on the command line. ConstrainedLanguage mode blocks the PSReadLine methods that put text on the command line. Thus the keys use the clipboard.
+
+## Tab completion
+
+Press Tab after `z` or `zi` to complete a folder from the history. Press Tab after `tldr` to complete a page name. Press Tab after `-` to complete the long option names of a command.
 
 ## Prompt
 
@@ -81,6 +85,7 @@ An upgrade replaces the profile file, and this setting with it. To keep your sha
 - Run `Update-Index 'S:\Finance\2026'` to refresh one folder under a share root.
 - At startup, the profile starts a background index job when the index is older than 24 hours. The prompt shows `[index building]` or `[index old]` when this applies.
 - `fd` in a folder that is not under `ShareRoots` uses a recursive search instead.
+- The index does not keep the Windows hidden attribute. Under `ShareRoots`, `fd` without `-H` hides only names that start with a dot.
 - The index keeps the size and the change time of each file. Thus `fd -Changed`, `fd -Size` and `recent` are fast on share roots.
 - The index builder lists a folder again only when the time of the folder changes. If a program changes a file but not its folder, the index keeps the old size and time of that file.
 - Version 1.1.0 uses a new index format. After the upgrade, the profile builds the index of each share root again one time. The profile does not read an index of version 1.0.0, and it deletes the old files.
@@ -107,6 +112,7 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
 - `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
 - The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
+- `bat` colors each line by itself, so a comment over many lines shows only part of its color. It colors files of up to 5000 lines.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
 ## Release

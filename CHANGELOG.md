@@ -15,9 +15,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `wc` takes `-l`, `-w` and `-c` and then shows only that number.
 - `$env:LOCALAPPDATA\ps-profile\share-roots.txt` keeps your share roots after an upgrade.
 - `tldr` has a page for every command.
+- `rg` has `-v`, `-w`, `-n`, `-A`, `-B` and `-s`.
+- `fd` has `-e`, `-t` and `-H`, and colors its output.
+- Tab completes `z` and `zi` folders and `tldr` pages.
+- `bat` has basic syntax colors. `du` has bars. `tldr` has colors.
+- `delta -s` shows two columns. `head -5` and `tail -5` work.
 
 ### Changed
 
+- `rg` and `fd` use smart case. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Before this change, `rg` was always case-sensitive and `fd` always ignored case.
+- `fd` hides hidden files and dot files. Use `-H` to show them.
+- The picker shows up to 50 rows when the window is tall enough.
 - The picker and the helpers read optional properties of an item safely, so they work in strict mode.
 - `$global:PSProfileVersion` holds the profile version.
 - The profile checks `$ShareRoots` at load. It warns about an entry that is not a non-empty string or not on a mapped network drive. It skips an entry that is not a non-empty string.

@@ -42,6 +42,19 @@ function global:Get-PSProfileProperty($Item, [string]$Name) {
     if ($property) { $property.Value }
 }
 
+function global:Test-PSProfileUpper {
+    [OutputType([bool])]
+    param([string]$Pattern)
+    ($Pattern -creplace '\\.', '') -cmatch '\p{Lu}'
+}
+
+function global:ConvertTo-PSProfileQuoted {
+    [OutputType([string])]
+    param([string]$Text)
+    if ($Text -match "[\s'`$&()\[\]{};,@#]") { return "'" + ($Text -replace "'", "''") + "'" }
+    $Text
+}
+
 function global:Get-PSProfileFullPath {
     [OutputType([string])]
     param([string]$Path)
@@ -412,10 +425,17 @@ function global:Find-PSProfileFile {
         [string[]]$Ext,
         [string]$Changed,
         [string]$Size,
+        [string]$Type,
+        [switch]$SkipHidden,
+        [switch]$SmartCase,
         [switch]$Meta,
         [int]$Limit = 0
     )
     $filter = $Ext -or $Changed -or $Size
+    $onlyDirs = $Type -like 'd*'
+    $onlyFiles = $filter -or $Type -like 'f*'
+    $caseSensitive = $SmartCase -and (Test-PSProfileUpper $Pattern)
+    $hiddenRx = '(?:^|[\\/])\.'
     $extRx = ''
     if ($Ext) { $extRx = '\.(?:' + ((@($Ext) | ForEach-Object { [regex]::Escape($_.TrimStart('.')) }) -join '|') + ')$' }
     $since = ''
@@ -437,10 +457,13 @@ function global:Find-PSProfileFile {
     if (-not $root) {
         $take = [int]::MaxValue
         if ($Limit -gt 0) { $take = $Limit }
-        $scan = @(Get-ChildItem -LiteralPath $typed -Recurse -Force -File:$filter -ErrorAction SilentlyContinue | Select-Object -First $take)
+        $scan = @(Get-ChildItem -LiteralPath $typed -Recurse -Force:(-not $SkipHidden) -File:$onlyFiles -Directory:$onlyDirs -ErrorAction SilentlyContinue | Select-Object -First $take)
+        $scanLength = $typed.TrimEnd('\', '/').Length
         if ($Limit -gt 0 -and $scan.Count -ge $Limit) { Write-Warning "fd: stopped after $Limit items. Give a smaller folder." }
         foreach ($i in $scan) {
             if ($i.Name -notmatch $Pattern) { continue }
+            if ($caseSensitive -and $i.Name -cnotmatch $Pattern) { continue }
+            if ($SkipHidden -and $i.FullName.Substring($scanLength) -match $hiddenRx) { continue }
             if ($extRx -and $i.Name -notmatch $extRx) { continue }
             if ($since -and $i.LastWriteTimeUtc.Ticks -lt [long]$since) { continue }
             if ($min -ge 0 -and $i.Length -lt $min) { continue }
@@ -466,7 +489,10 @@ function global:Find-PSProfileFile {
         $f = $h.Split("`t")
         $leaf = $f[2].Substring($f[2].LastIndexOf($sep) + 1)
         if ($leaf -notmatch $Pattern) { continue }
-        if ($filter -and -not $f[1]) { continue }
+        if ($caseSensitive -and $leaf -cnotmatch $Pattern) { continue }
+        if ($SkipHidden -and $f[2].Substring($uncPrefix.Length) -match $hiddenRx) { continue }
+        if ($onlyFiles -and -not $f[1]) { continue }
+        if ($onlyDirs -and $f[1]) { continue }
         if ($min -ge 0 -and [long]$f[1] -lt $min) { continue }
         if ($max -ge 0 -and [long]$f[1] -gt $max) { continue }
         $p = $typedPrefix + $f[2].Substring($uncPrefix.Length)
@@ -479,11 +505,31 @@ function global:fd {
     param(
         [Parameter(Position = 0)][string]$Pattern = '.',
         [Parameter(Position = 1)][string]$Path = '.',
-        [string[]]$Ext,
+        [Alias('e')][string[]]$Ext,
         [string]$Changed,
-        [string]$Size
+        [string]$Size,
+        [Alias('t')][ValidateSet('f', 'd', 'file', 'directory')][string]$Type,
+        [Alias('H')][switch]$Hidden
     )
-    Find-PSProfileFile @PSBoundParameters
+    $toHost = Test-PSProfileToHost $MyInvocation
+    $a = @{ Pattern = $Pattern; Path = $Path; Ext = $Ext; Changed = $Changed; Size = $Size; Type = $Type; SkipHidden = (-not $Hidden); SmartCase = $true }
+    if (-not $toHost) { Find-PSProfileFile @a; return }
+    Find-PSProfileFile @a -Meta | ForEach-Object {
+        $f = $_.Split("`t")
+        Write-PSProfilePath $f[2] (-not $f[1])
+    }
+}
+
+function global:Write-PSProfilePath([string]$Path, [bool]$IsDir) {
+    $at = $Path.LastIndexOf('\')
+    if ($Path.LastIndexOf('/') -gt $at) { $at = $Path.LastIndexOf('/') }
+    $leaf = $Path.Substring($at + 1)
+    if ($at -ge 0) { Write-Host $Path.Substring(0, $at + 1) -ForegroundColor DarkGray -NoNewline }
+    $ext = [regex]::Match($leaf, '\.[^.]*$').Value.ToLower()
+    $c = 'Gray'
+    if ($IsDir) { $c = 'Cyan' }
+    elseif ($global:PSProfileColors.ContainsKey($ext)) { $c = $global:PSProfileColors[$ext] }
+    Write-Host $leaf -ForegroundColor $c
 }
 
 function global:Format-PSProfileSize {
@@ -508,7 +554,7 @@ function global:recent {
         if (-not $toHost) { $f[2]; continue }
         $t = (New-Object DateTime ([long]$f[0]), 'Utc').ToLocalTime().ToString('yyyy-MM-dd HH:mm')
         Write-Host ('{0}  {1,10}  ' -f $t, (Format-PSProfileSize $f[1])) -ForegroundColor DarkGray -NoNewline
-        Write-Host $f[2]
+        Write-PSProfilePath $f[2] $false
     }
 }
 
@@ -540,7 +586,13 @@ function global:rg {
         [Alias('F')][switch]$SimpleMatch,
         [Alias('g')][string[]]$Glob,
         [Alias('C')][int]$Context = 0,
+        [Alias('A')][int]$After = -1,
+        [Alias('B')][int]$Before = -1,
         [Alias('l')][switch]$FilesWithMatches,
+        [Alias('v')][switch]$InvertMatch,
+        [Alias('w')][switch]$Word,
+        [Alias('n')][switch]$LineNumber,
+        [Alias('s')][switch]$CaseSensitive,
         [int]$MaxSizeMB = 20,
         [switch]$Office
     )
@@ -548,6 +600,14 @@ function global:rg {
         $toHost = Test-PSProfileToHost $MyInvocation
         $rx = $Pattern
         if ($SimpleMatch) { $rx = [regex]::Escape($Pattern) }
+        if ($Word) { $rx = '\b(?:' + $rx + ')\b' }
+        $ignore = $IgnoreCase -or (-not $CaseSensitive -and -not (Test-PSProfileUpper $Pattern))
+        $selectArgs = @{ Pattern = $rx; CaseSensitive = (-not $ignore) }
+        if ($InvertMatch) { $selectArgs.NotMatch = $true } else { $selectArgs.AllMatches = $true }
+        $pre = $Context
+        $post = $Context
+        if ($Before -ge 0) { $pre = $Before }
+        if ($After -ge 0) { $post = $After }
         $skipped = @{ Legacy = 0; Large = 0 }
         $seen = 0
         $search = {
@@ -567,17 +627,19 @@ function global:rg {
                 if ($null -eq $text) { return }
                 $lines = Split-PSProfileLines $text
             }
-            if ($IgnoreCase) { $any = $lines -match $rx } else { $any = $lines -cmatch $rx }
-            if (-not $any) { return }
-            $ms = @($lines | Select-String -Pattern $rx -CaseSensitive:(-not $IgnoreCase) -AllMatches)
+            if (-not $InvertMatch) {
+                if ($ignore) { $any = $lines -match $rx } else { $any = $lines -cmatch $rx }
+                if (-not $any) { return }
+            }
+            $ms = @($lines | Select-String @selectArgs)
             if (-not $ms.Count) { return }
             if ($FilesWithMatches) { $file.FullName; return }
             if (-not $toHost) {
                 foreach ($m in $ms) {
                     $n = $m.LineNumber - 1
-                    $a = $n - $Context
+                    $a = $n - $pre
                     if ($a -lt 0) { $a = 0 }
-                    $b = $n + $Context
+                    $b = $n + $post
                     if ($b -gt $lines.Count - 1) { $b = $lines.Count - 1 }
                     New-Object PSObject -Property @{
                         Path        = $file.FullName
@@ -594,13 +656,13 @@ function global:rg {
             foreach ($m in $ms) { $hit[$m.LineNumber - 1] = $m.Matches }
             $show = @{}
             foreach ($n in $hit.Keys) {
-                for ($j = $n - $Context; $j -le $n + $Context; $j++) {
+                for ($j = $n - $pre; $j -le $n + $post; $j++) {
                     if ($j -ge 0 -and $j -lt $lines.Count) { $show[$j] = $true }
                 }
             }
             $last = -2
             foreach ($j in ($show.Keys | Sort-Object)) {
-                if ($Context -and $last -ge 0 -and $j -gt $last + 1) { Write-Host '--' -ForegroundColor DarkGray }
+                if (($pre -or $post) -and $last -ge 0 -and $j -gt $last + 1) { Write-Host '--' -ForegroundColor DarkGray }
                 $last = $j
                 if ($hit.ContainsKey($j)) {
                     Write-Host ('{0}:' -f ($j + 1)) -ForegroundColor Green -NoNewline
@@ -628,25 +690,29 @@ function global:rg {
         $piped = @{}
         $searchText = {
             $lines = @(for ($q = 0; $q -lt $piped.Count; $q++) { $piped[$q] })
-            $ms = @($lines | Select-String -Pattern $rx -CaseSensitive:(-not $IgnoreCase) -AllMatches)
+            $ms = @($lines | Select-String @selectArgs)
             if (-not $ms.Count) { return }
             if ($FilesWithMatches) { '(standard input)'; return }
             $hit = @{}
             foreach ($m in $ms) { $hit[$m.LineNumber - 1] = $m.Matches }
             $show = @{}
             foreach ($n in $hit.Keys) {
-                for ($j = $n - $Context; $j -le $n + $Context; $j++) {
+                for ($j = $n - $pre; $j -le $n + $post; $j++) {
                     if ($j -ge 0 -and $j -lt $lines.Count) { $show[$j] = $true }
                 }
             }
             $last = -2
             foreach ($j in ($show.Keys | Sort-Object)) {
-                if ($Context -and $last -ge 0 -and $j -gt $last + 1) {
+                if (($pre -or $post) -and $last -ge 0 -and $j -gt $last + 1) {
                     if ($toHost) { Write-Host '--' -ForegroundColor DarkGray } else { '--' }
                 }
                 $last = $j
-                if (-not $toHost) { $lines[$j] }
-                elseif ($hit.ContainsKey($j)) { Write-PSProfileMatchLine $lines[$j] $hit[$j] }
+                if (-not $toHost) {
+                    if ($LineNumber) { '{0}:{1}' -f ($j + 1), $lines[$j] } else { $lines[$j] }
+                    continue
+                }
+                if ($LineNumber) { Write-Host ('{0}:' -f ($j + 1)) -ForegroundColor Green -NoNewline }
+                if ($hit.ContainsKey($j)) { Write-PSProfileMatchLine $lines[$j] $hit[$j] }
                 else { Write-Host $lines[$j] -ForegroundColor DarkGray }
             }
         }
@@ -731,6 +797,10 @@ function global:fzf {
     })
     $width = 0
     try { $width = $Host.UI.RawUI.WindowSize.Width } catch { $width = 0 }
+    $maxRows = 20
+    try { $maxRows = $Host.UI.RawUI.WindowSize.Height - 6 } catch { $maxRows = 20 }
+    if ($maxRows -lt 20) { $maxRows = 20 }
+    if ($maxRows -gt 50) { $maxRows = 50 }
     while ($true) {
         $tokens = @($Query -split '\s+' | Where-Object { $_ })
         $cand = $texts
@@ -766,14 +836,14 @@ function global:fzf {
                     if ($at -eq 0 -or $t.Substring($at - 1, 1) -match '[^A-Za-z0-9]') { $score += 15 }
                 }
                 New-Object PSObject -Property @{ Text = $t; Score = $score }
-            } | Sort-Object Score -Descending | Select-Object -First 20 | ForEach-Object { $_.Text })
+            } | Sort-Object Score -Descending | Select-Object -First $maxRows | ForEach-Object { $_.Text })
         } else {
-            $top = @($cand | Select-Object -First 20)
+            $top = @($cand | Select-Object -First $maxRows)
         }
         $prev = @()
         if ($top.Count -and $width -ge 60) {
             for ($i = 0; $i -lt $texts.Count; $i++) {
-                if ($texts[$i] -ceq $top[0]) { $prev = @(Get-PSProfilePreview $items[$i] 20); break }
+                if ($texts[$i] -ceq $top[0]) { $prev = @(Get-PSProfilePreview $items[$i] $maxRows); break }
             }
         }
         Write-Host ('{0} of {1} match' -f $total, $texts.Count) -ForegroundColor DarkGray
@@ -886,15 +956,17 @@ function global:Enter-PSProfileZ {
     return $true
 }
 
-function global:z {
-    foreach ($p in @(Get-PSProfileZ $args)) {
+function global:z([string]$Query) {
+    $terms = @(@($Query) + $args | Where-Object { $_ })
+    foreach ($p in @(Get-PSProfileZ $terms)) {
         if (Enter-PSProfileZ $p) { return }
     }
-    Write-Warning "z: no match for '$args'."
+    Write-Warning "z: no match for '$terms'."
 }
 
-function global:zi {
-    $pick = Get-PSProfileZ $args | fzf
+function global:zi([string]$Query) {
+    $terms = @(@($Query) + $args | Where-Object { $_ })
+    $pick = Get-PSProfileZ $terms | fzf
     if ($pick) { $null = Enter-PSProfileZ $pick }
 }
 
@@ -981,12 +1053,33 @@ function global:Write-PSProfileWordLine([string]$Mark, [string[]]$Tokens, [hasht
     Write-Host ''
 }
 
+function global:Write-PSProfileSideRow($LeftNo, [string]$Left, [string]$LeftColor, $RightNo, [string]$Right, [string]$RightColor, [int]$Width) {
+    Write-Host ('{0,5} ' -f $LeftNo) -ForegroundColor DarkGray -NoNewline
+    Write-Host (Format-PSProfileFit $Left $Width) -ForegroundColor $LeftColor -NoNewline
+    Write-Host ' | ' -ForegroundColor DarkGray -NoNewline
+    Write-Host ('{0,5} ' -f $RightNo) -ForegroundColor DarkGray -NoNewline
+    Write-Host (Format-PSProfileFit $Right $Width).TrimEnd() -ForegroundColor $RightColor
+}
+
 function global:delta {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Path1,
-        [Parameter(Mandatory = $true, Position = 1)][string]$Path2
+        [Parameter(Mandatory = $true, Position = 1)][string]$Path2,
+        [Alias('s')][switch]$SideBySide
     )
     $toHost = Test-PSProfileToHost $MyInvocation
+    $side = $toHost -and $SideBySide
+    $half = 0
+    if ($side) {
+        $width = 0
+        try { $width = $Host.UI.RawUI.WindowSize.Width } catch { $width = 0 }
+        if (-not $width) { $width = 120 }
+        $half = [int](($width - 16 - $width % 2) / 2)
+        if ($half -lt 20) {
+            Write-Warning 'delta: the window is too narrow for side by side. The output is a unified diff.'
+            $side = $false
+        }
+    }
     if (-not (Test-Path -LiteralPath $Path1)) { Write-Error "delta: '$Path1' not found."; return }
     if (-not (Test-Path -LiteralPath $Path2)) { Write-Error "delta: '$Path2' not found."; return }
     $a = Get-PSProfileFileLines $Path1
@@ -1030,7 +1123,8 @@ function global:delta {
         while ($i -le $e) {
             $op = $ops[$i]
             if ($op.T -eq ' ') {
-                if ($toHost) { Write-Host (' ' + $a[$op.A]) } else { ' ' + $a[$op.A] }
+                if ($side) { Write-PSProfileSideRow ($op.A + 1) $a[$op.A] 'Gray' ($op.B + 1) $b[$op.B] 'Gray' $half }
+                elseif ($toHost) { Write-Host (' ' + $a[$op.A]) } else { ' ' + $a[$op.A] }
                 $i++
                 continue
             }
@@ -1038,6 +1132,20 @@ function global:delta {
             while ($i -le $e -and $ops[$i].T -eq '-') { $dels += $ops[$i]; $i++ }
             $adds = @()
             while ($i -le $e -and $ops[$i].T -eq '+') { $adds += $ops[$i]; $i++ }
+            if ($side) {
+                $count = $dels.Count
+                if ($adds.Count -gt $count) { $count = $adds.Count }
+                for ($p = 0; $p -lt $count; $p++) {
+                    $leftNo = ''
+                    $leftText = ''
+                    $rightNo = ''
+                    $rightText = ''
+                    if ($p -lt $dels.Count) { $leftNo = $dels[$p].A + 1; $leftText = $a[$dels[$p].A] }
+                    if ($p -lt $adds.Count) { $rightNo = $adds[$p].B + 1; $rightText = $b[$adds[$p].B] }
+                    Write-PSProfileSideRow $leftNo $leftText 'Red' $rightNo $rightText 'Green' $half
+                }
+                continue
+            }
             if (-not $toHost) {
                 foreach ($d in $dels) { '-' + $a[$d.A] }
                 foreach ($d in $adds) { '+' + $b[$d.B] }
@@ -1070,6 +1178,53 @@ function global:delta {
     }
 }
 
+$global:PSProfileSyntaxRules = @{
+    PowerShell = @{ Prefix = '(?i)'; Comment = '#.*$'; Keywords = 'begin|break|catch|class|continue|do|else|elseif|end|exit|filter|finally|for|foreach|function|if|in|param|process|return|switch|throw|try|until|while' }
+    Python     = @{ Prefix = ''; Comment = '#.*$'; Keywords = 'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield' }
+    Shell      = @{ Prefix = ''; Comment = '#.*$'; Keywords = 'case|do|done|elif|else|esac|exit|export|fi|for|function|if|in|local|return|then|until|while' }
+    CLike      = @{ Prefix = ''; Comment = '//.*$|/\*.*?\*/'; Keywords = 'async|await|bool|break|case|catch|char|class|const|continue|def|default|double|else|enum|export|extends|false|final|finally|float|fn|for|foreach|from|func|function|if|implements|import|in|int|interface|let|long|namespace|new|null|package|private|protected|public|return|static|string|struct|switch|this|throw|true|try|type|typeof|using|var|void|while' }
+    Sql        = @{ Prefix = '(?i)'; Comment = '--.*$'; Keywords = 'alter|and|as|asc|begin|by|case|create|delete|desc|distinct|drop|else|end|exists|from|group|having|in|index|inner|insert|into|is|join|left|like|limit|not|null|on|or|order|outer|right|select|set|table|then|union|update|values|when|where|with' }
+    Config     = @{ Prefix = ''; Comment = '(?:^|\s)[#;].*$'; Keywords = 'false|no|null|off|on|true|yes' }
+    Json       = @{ Prefix = ''; Comment = ''; Keywords = 'false|null|true' }
+    Batch      = @{ Prefix = '(?i)'; Comment = '^\s*(?:rem\b|::).*$'; Keywords = 'call|cd|echo|else|exit|for|goto|if|in|not|set|setlocal|endlocal' }
+}
+
+$global:PSProfileSyntaxExt = @{
+    '.ps1' = 'PowerShell'; '.psm1' = 'PowerShell'; '.psd1' = 'PowerShell'; '.py' = 'Python'; '.sh' = 'Shell'; '.bash' = 'Shell'
+    '.js' = 'CLike'; '.jsx' = 'CLike'; '.ts' = 'CLike'; '.tsx' = 'CLike'; '.cs' = 'CLike'; '.java' = 'CLike'; '.c' = 'CLike'; '.h' = 'CLike'
+    '.cpp' = 'CLike'; '.hpp' = 'CLike'; '.go' = 'CLike'; '.rs' = 'CLike'; '.sql' = 'Sql'; '.json' = 'Json'; '.yml' = 'Config'; '.yaml' = 'Config'
+    '.toml' = 'Config'; '.ini' = 'Config'; '.cfg' = 'Config'; '.conf' = 'Config'; '.bat' = 'Batch'; '.cmd' = 'Batch'
+}
+
+function global:Get-PSProfileSyntax {
+    [OutputType([string])]
+    param([string]$Path)
+    $language = $global:PSProfileSyntaxExt[[regex]::Match($Path, '\.[^.\\/]*$').Value.ToLower()]
+    if (-not $language) { return '' }
+    $rule = $global:PSProfileSyntaxRules[$language]
+    $parts = @()
+    if ($rule.Comment) { $parts += '(?<c>' + $rule.Comment + ')' }
+    $parts += '(?<s>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*'')'
+    $parts += '(?<n>\b\d+(?:\.\d+)?\b)'
+    $parts += '(?<k>\b(?:' + $rule.Keywords + ')\b)'
+    $rule.Prefix + ($parts -join '|')
+}
+
+function global:Write-PSProfileSyntaxLine([string]$Line, [string]$Rx) {
+    $pos = 0
+    foreach ($m in [regex]::Matches($Line, $Rx)) {
+        if ($m.Length -eq 0) { continue }
+        if ($m.Index -gt $pos) { Write-Host $Line.Substring($pos, $m.Index - $pos) -NoNewline }
+        $c = 'Cyan'
+        if ($m.Groups['c'].Success) { $c = 'DarkGray' }
+        elseif ($m.Groups['s'].Success) { $c = 'Green' }
+        elseif ($m.Groups['n'].Success) { $c = 'Magenta' }
+        Write-Host $m.Value -ForegroundColor $c -NoNewline
+        $pos = $m.Index + $m.Length
+    }
+    Write-Host $Line.Substring($pos)
+}
+
 function global:bat {
     param(
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
@@ -1097,12 +1252,16 @@ function global:bat {
                 continue
             }
             Write-Host (Get-PSProfileFullPath $p) -ForegroundColor Magenta
+            $syntax = ''
+            if ($lines.Count -le 5000) { $syntax = Get-PSProfileSyntax $p }
             $fmt = '{0,' + ('' + $last).Length + '} '
             for ($n = $from; $n -le $last; $n++) {
                 Write-Host ($fmt -f $n) -ForegroundColor DarkGray -NoNewline
                 $ms = $null
                 if ($Pattern) { $ms = [regex]::Matches($lines[$n - 1], '(?i)' + $Pattern) }
-                if ($ms -and $ms.Count) { Write-PSProfileMatchLine $lines[$n - 1] $ms } else { Write-Host $lines[$n - 1] }
+                if ($ms -and $ms.Count) { Write-PSProfileMatchLine $lines[$n - 1] $ms }
+                elseif ($syntax -and $lines[$n - 1].Length -le 2000) { Write-PSProfileSyntaxLine $lines[$n - 1] $syntax }
+                else { Write-Host $lines[$n - 1] }
             }
         }
     }
@@ -1155,6 +1314,11 @@ function global:du {
         param($Dir, $Level)
         if ($toHost) {
             Write-Host ('{0,10}  ' -f (Format-PSProfileSize $size[$Dir])) -ForegroundColor DarkGray -NoNewline
+            $filled = 0
+            if ($size[$top]) { $filled = [int](12 * $size[$Dir] / $size[$top]) }
+            if ($filled -lt 1 -and $size[$Dir]) { $filled = 1 }
+            Write-Host ([string][char]0x2588 * $filled) -ForegroundColor DarkCyan -NoNewline
+            Write-Host ([string][char]0x2591 * (12 - $filled) + '  ') -ForegroundColor DarkGray -NoNewline
             $name = $Dir
             if ($Level) { $name = ('  ' * $Level) + $Dir.Substring($Dir.LastIndexOf($sep) + 1) }
             Write-Host $name -ForegroundColor Cyan
@@ -1225,7 +1389,10 @@ $global:PSProfileTldr = [ordered]@{
     'fd'           = 'Find files by name. Uses the index under ShareRoots.',
                      'fd report  # Files and folders with report in the name',
                      "fd '\.pdf$' S:\Finance  # PDF files under a folder",
-                     'fd -Ext docx,xlsx  # Files with these extensions',
+                     'fd -e docx,xlsx  # Files with these extensions',
+                     'fd -t d report  # Folders only (-t f for files only)',
+                     'fd -H config  # Also show hidden files and dot files',
+                     'fd Report  # An upper-case letter makes the search case-sensitive',
                      'fd -Changed 30d  # Files changed in the last 30 days',
                      'fd -Size +1MB  # Files of 1 MB or more (-10KB for 10 KB or less)'
     'recent'       = 'The most recently changed files under the current folder.',
@@ -1233,7 +1400,14 @@ $global:PSProfileTldr = [ordered]@{
                      'recent -Days 30 -Count 50  # 50 files changed in the last 30 days'
     'rg'           = 'Search file content. Alias grep.',
                      'rg TODO  # Lines with TODO under the current folder',
-                     'rg -i invoice -g *.txt  # Ignore case, only .txt files',
+                     'rg invoice  # Lower-case text ignores case',
+                     'rg Invoice  # An upper-case letter makes the search case-sensitive',
+                     'rg -s invoice  # Always case-sensitive',
+                     'rg -i Invoice -g *.txt  # Always ignore case, only .txt files',
+                     'rg -v debug log.txt  # Lines that do not match',
+                     'rg -w cat notes.txt  # Whole words only',
+                     'rg -A 2 -B 1 error log.txt  # 2 lines after and 1 before each match',
+                     'ipconfig | rg -n IPv4  # Add line numbers to piped text',
                      'rg budget -Office  # Also search .docx, .xlsx and .pptx files',
                      'rg error -C 2  # Show 2 lines before and after each match',
                      'fd -Ext csv | rg total  # Search only the files that fd finds',
@@ -1274,9 +1448,11 @@ $global:PSProfileTldr = [ordered]@{
                      'll  # All items in the current folder'
     'head'         = 'Show the first lines.',
                      'head notes.txt -n 5  # First 5 lines of a file',
+                     'head -5 notes.txt  # Same as -n 5',
                      'fd report | head -n 3  # First 3 items of piped input'
     'tail'         = 'Show the last lines.',
                      'tail log.txt -n 5  # Last 5 lines of a file',
+                     'tail -5 log.txt  # Same as -n 5',
                      'tail -f log.txt  # Show new lines as they arrive. Press Ctrl+C to stop.'
     'wc'           = 'Count lines, words and characters.',
                      'wc notes.txt  # All the counts',
@@ -1302,7 +1478,8 @@ $global:PSProfileTldr = [ordered]@{
     'reload'       = 'Load the profile again.',
                      'reload  # Use the changes to the profile'
     'delta'        = 'Show the differences between two files. Office files are compared as text.',
-                     'delta old.docx new.docx  # Changes between two Word files'
+                     'delta old.docx new.docx  # Changes between two Word files',
+                     'delta -s old.txt new.txt  # Side by side'
     'Update-Index' = 'Build or refresh the file index for ShareRoots.',
                      'Update-Index  # All share roots',
                      "Update-Index 'S:\Finance\2026'  # One folder"
@@ -1316,15 +1493,29 @@ $global:PSProfileTldr = [ordered]@{
 }
 
 function global:tldr([string]$Name) {
+    $toHost = Test-PSProfileToHost $MyInvocation
     if (-not $Name) {
-        foreach ($k in $global:PSProfileTldr.Keys) { '{0,-13} {1}' -f $k, $global:PSProfileTldr[$k][0] }
+        foreach ($k in $global:PSProfileTldr.Keys) {
+            if ($toHost) {
+                Write-Host ('{0,-13} ' -f $k) -ForegroundColor Cyan -NoNewline
+                Write-Host $global:PSProfileTldr[$k][0]
+            } else {
+                '{0,-13} {1}' -f $k, $global:PSProfileTldr[$k][0]
+            }
+        }
         return
     }
     $e = $global:PSProfileTldr[$Name]
     if (-not $e) { Write-Error "tldr: no page for '$Name'. Run tldr to see the list."; return }
-    $e[0]
+    if ($toHost) { Write-Host $e[0] -ForegroundColor Cyan } else { $e[0] }
     for ($i = 1; $i -lt $e.Count; $i++) {
         $p = $e[$i] -split '  # ', 2
+        if ($toHost) {
+            Write-Host ''
+            Write-Host ('  ' + $p[1]) -ForegroundColor DarkGray
+            Write-Host ('    ' + $p[0]) -ForegroundColor Green
+            continue
+        }
         ''
         '  ' + $p[1]
         '    ' + $p[0]
@@ -1349,11 +1540,18 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     Set-PSReadLineKeyHandler -Chord Ctrl+t -BriefDescription PickFile -Description 'Pick a file under the current folder and copy its path' -ScriptBlock {
         Write-Host ''
         $pick = @(Find-PSProfileFile -Meta -Limit 20000) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
-        if ($pick) {
-            if ($pick -match "[\s'`$&()\[\]{};,@#]") { $pick = "'" + ($pick -replace "'", "''") + "'" }
-            Copy-PSProfilePick $pick
-        }
+        if ($pick) { Copy-PSProfilePick (ConvertTo-PSProfileQuoted $pick) }
     }
+}
+
+Register-ArgumentCompleter -CommandName z, zi -ParameterName Query -ScriptBlock {
+    param($commandName, $parameterName, $wordToComplete)
+    Get-PSProfileZ @($wordToComplete.Trim("'", '"')) | ForEach-Object { ConvertTo-PSProfileQuoted $_ }
+}
+
+Register-ArgumentCompleter -CommandName tldr -ParameterName Name -ScriptBlock {
+    param($commandName, $parameterName, $wordToComplete)
+    $global:PSProfileTldr.Keys | Where-Object { $_ -like "$wordToComplete*" }
 }
 
 function global:.. { Set-Location .. }
@@ -1383,27 +1581,35 @@ Set-Alias -Name grep -Value rg -Scope Global
 Set-Alias -Name open -Value Invoke-Item -Scope Global
 Set-Alias -Name pb -Value Get-Clipboard -Scope Global
 
-function global:head([string]$Path, [Alias('n')][int]$Count = 10) {
-    if ($Path) { Get-Content -LiteralPath $Path -TotalCount $Count } else { $input | Select-Object -First $Count }
+function global:Resolve-PSProfileCount($Path, $Count) {
+    if ("$Path" -match '^-(\d+)$') {
+        $n = [int]$Matches[1]
+        $file = ''
+        if ("$Count" -notmatch '^\d+$') { $file = "$Count" }
+        return @{ Path = $file; N = $n }
+    }
+    @{ Path = "$Path"; N = [int]$Count }
 }
 
-function global:tail([string]$Path, [Alias('n')][int]$Count = 10, [Alias('f')][switch]$Follow) {
-    if ($Path) { Get-Content -LiteralPath $Path -Tail $Count -Wait:$Follow } else { $input | Select-Object -Last $Count }
+function global:head($Path, [Alias('n')]$Count = 10) {
+    $a = Resolve-PSProfileCount $Path $Count
+    if ($a.Path) { Get-Content -LiteralPath $a.Path -TotalCount $a.N } else { $input | Select-Object -First $a.N }
 }
 
-function global:wc {
+function global:tail($Path, [Alias('n')]$Count = 10, [Alias('f')][switch]$Follow) {
+    $a = Resolve-PSProfileCount $Path $Count
+    if ($a.Path) { Get-Content -LiteralPath $a.Path -Tail $a.N -Wait:$Follow } else { $input | Select-Object -Last $a.N }
+}
+
+function global:wc([Alias('l')][switch]$Lines, [Alias('w')][switch]$Words, [Alias('c', 'm')][switch]$Chars) {
     $field = ''
-    $paths = @(foreach ($arg in $args) {
-        if ($arg -ceq '-l') { $field = 'Lines' }
-        elseif ($arg -ceq '-w') { $field = 'Words' }
-        elseif ($arg -ceq '-c' -or $arg -ceq '-m') { $field = 'Chars' }
-        else { $arg }
-    })
+    if ($Lines) { $field = 'Lines' } elseif ($Words) { $field = 'Words' } elseif ($Chars) { $field = 'Chars' }
+    $paths = @($args)
     $texts = @(if ($paths.Count) {
         foreach ($p in $paths) { @{ Path = $p; Text = Read-PSProfileText $p } }
     } else {
-        $lines = @($input | ForEach-Object { "$_" })
-        if ($lines.Count) { @{ Path = ''; Text = ($lines -join "`n") + "`n" } }
+        $pipedLines = @($input | ForEach-Object { "$_" })
+        if ($pipedLines.Count) { @{ Path = ''; Text = ($pipedLines -join "`n") + "`n" } }
         elseif ($field) { @{ Path = ''; Text = '' } }
     })
     foreach ($t in $texts) {
