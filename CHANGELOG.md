@@ -9,7 +9,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `check.ps1` and `tests.ps1` check the profile. The check parses the files and bans comments. It runs PSScriptAnalyzer, finds unused functions and runs the tests in ConstrainedLanguage mode with strict mode. It replays the tests against `origin/main`.
+- `rg` and `grep` filter piped text, for example `ipconfig | rg IPv4`. A piped full path that exists is still searched as a file.
+- `cd -` goes back to the previous folder. Windows PowerShell 5.1 does not have this.
+- `tail -f` shows new lines as they arrive.
+- `wc` takes `-l`, `-w` and `-c` and then shows only that number.
+- `$env:LOCALAPPDATA\ps-profile\share-roots.txt` keeps your share roots after an upgrade.
+- `tldr` has a page for every command.
 
 ### Changed
 

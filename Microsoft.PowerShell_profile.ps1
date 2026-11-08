@@ -6,6 +6,10 @@ if (-not (Test-Path -LiteralPath $global:PSProfileDataDir)) {
     New-Item -ItemType Directory -Path $global:PSProfileDataDir -Force | Out-Null
 }
 if (-not $global:PSProfileIndexCache) { $global:PSProfileIndexCache = @{} }
+$global:PSProfileRootsFile = Join-Path $global:PSProfileDataDir 'share-roots.txt'
+if (Test-Path -LiteralPath $global:PSProfileRootsFile) {
+    $global:ShareRoots += @(Get-Content -LiteralPath $global:PSProfileRootsFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
 
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     $global:PSProfileByteArgs = @{ Encoding = 'Byte' }
@@ -519,6 +523,13 @@ function global:Write-PSProfileMatchLine([string]$Line, [System.Text.RegularExpr
     Write-Host $Line.Substring($pos)
 }
 
+function global:Test-PSProfilePipedPath {
+    [OutputType([bool])]
+    param([string]$Text)
+    if ($Text -notmatch '^(?:[A-Za-z]:[\\/]|\\\\|/)') { return $false }
+    try { return (Test-Path -LiteralPath $Text -ErrorAction Stop) } catch { return $false }
+}
+
 function global:rg {
     [CmdletBinding()]
     param(
@@ -614,14 +625,44 @@ function global:rg {
             }
             Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { & $search $_ }
         }
+        $piped = @{}
+        $searchText = {
+            $lines = @(for ($q = 0; $q -lt $piped.Count; $q++) { $piped[$q] })
+            $ms = @($lines | Select-String -Pattern $rx -CaseSensitive:(-not $IgnoreCase) -AllMatches)
+            if (-not $ms.Count) { return }
+            if ($FilesWithMatches) { '(standard input)'; return }
+            $hit = @{}
+            foreach ($m in $ms) { $hit[$m.LineNumber - 1] = $m.Matches }
+            $show = @{}
+            foreach ($n in $hit.Keys) {
+                for ($j = $n - $Context; $j -le $n + $Context; $j++) {
+                    if ($j -ge 0 -and $j -lt $lines.Count) { $show[$j] = $true }
+                }
+            }
+            $last = -2
+            foreach ($j in ($show.Keys | Sort-Object)) {
+                if ($Context -and $last -ge 0 -and $j -gt $last + 1) {
+                    if ($toHost) { Write-Host '--' -ForegroundColor DarkGray } else { '--' }
+                }
+                $last = $j
+                if (-not $toHost) { $lines[$j] }
+                elseif ($hit.ContainsKey($j)) { Write-PSProfileMatchLine $lines[$j] $hit[$j] }
+                else { Write-Host $lines[$j] -ForegroundColor DarkGray }
+            }
+        }
     }
     process {
         foreach ($p in $Path) {
+            if ($MyInvocation.ExpectingInput -and -not (Test-PSProfilePipedPath $p)) {
+                $piped[$piped.Count] = $p
+                continue
+            }
             $seen++
             & $searchPath $p
         }
     }
     end {
+        if ($piped.Count) { & $searchText }
         if (-not $seen -and -not $MyInvocation.ExpectingInput) { & $searchPath '.' }
         if ($skipped.Legacy -or $skipped.Large) {
             Write-Warning ('rg: skipped {0} legacy Office file(s) (.doc .xls .ppt) and {1} file(s) over {2} MB.' -f $skipped.Legacy, $skipped.Large, $MaxSizeMB)
@@ -859,7 +900,14 @@ function global:zi {
 
 Remove-Item Alias:cd -Force -ErrorAction SilentlyContinue
 function global:cd {
-    try { Set-Location @args -ErrorAction Stop } catch { Write-Error $_; return }
+    try {
+        if ($args.Count -eq 1 -and $args[0] -ceq '-') {
+            if (-not $global:PSProfileOldPwd) { Write-Error 'cd: no previous folder.'; return }
+            Set-Location -LiteralPath $global:PSProfileOldPwd -ErrorAction Stop
+        } else {
+            Set-Location @args -ErrorAction Stop
+        }
+    } catch { Write-Error $_; return }
     if ($args.Count -and $MyInvocation.CommandOrigin -eq 'Runspace') { Add-PSProfileZ (Get-Location).ProviderPath }
 }
 
@@ -1188,7 +1236,10 @@ $global:PSProfileTldr = [ordered]@{
                      'rg -i invoice -g *.txt  # Ignore case, only .txt files',
                      'rg budget -Office  # Also search .docx, .xlsx and .pptx files',
                      'rg error -C 2  # Show 2 lines before and after each match',
-                     'fd -Ext csv | rg total  # Search only the files that fd finds'
+                     'fd -Ext csv | rg total  # Search only the files that fd finds',
+                     'ipconfig | rg IPv4  # Filter piped text'
+    'grep'         = 'Alias of rg.',
+                     'grep -i error log.txt  # Same as rg -i error log.txt'
     'rgi'          = 'Content search in the picker. A pick opens the file.',
                      'rgi budget -Office  # Pick a match. The preview shows the lines around it.'
     'fzf'          = 'Pick an item from a list. Type text to filter. The preview shows item 1.',
@@ -1208,6 +1259,48 @@ $global:PSProfileTldr = [ordered]@{
     'z'            = 'Go to a folder that you used before. zi shows a picker.',
                      'z fin  # Best folder that matches fin',
                      'zi  # Pick a folder from the list'
+    'zi'           = 'Pick a folder that you used before.',
+                     'zi fin  # Pick from the folders that match fin'
+    'cd'           = 'Change folder and record the visit for z.',
+                     'cd S:\Finance  # Go to a folder',
+                     'cd -  # Go back to the previous folder'
+    'up'           = 'Go to a parent folder. .. and ... go up one and two levels.',
+                     'up 3  # Go up three levels'
+    'mkcd'         = 'Create a folder and enter it.',
+                     'mkcd reports\2026  # Create the folders and enter the last one'
+    'ls'           = 'List files. Colors show the file type.',
+                     'ls *.txt  # List the text files'
+    'll'           = 'List files, also hidden files.',
+                     'll  # All items in the current folder'
+    'head'         = 'Show the first lines.',
+                     'head notes.txt -n 5  # First 5 lines of a file',
+                     'fd report | head -n 3  # First 3 items of piped input'
+    'tail'         = 'Show the last lines.',
+                     'tail log.txt -n 5  # Last 5 lines of a file',
+                     'tail -f log.txt  # Show new lines as they arrive. Press Ctrl+C to stop.'
+    'wc'           = 'Count lines, words and characters.',
+                     'wc notes.txt  # All the counts',
+                     'wc -l notes.txt  # Only the number of lines',
+                     'fd report | wc -l  # Count piped lines. -w counts words and -c characters.'
+    'which'        = 'Show what a command name runs.',
+                     'which git  # Path, alias or command type'
+    'touch'        = 'Create a file or update its change time.',
+                     'touch notes.txt  # Create or update the file'
+    'cpath'        = 'Copy paths to the clipboard.',
+                     'cpath  # Copy the current folder',
+                     'fd report | cpath  # Copy the piped paths'
+    'unc'          = 'Show the UNC path of a mapped drive path.',
+                     'unc S:\Finance  # The \\server\share form of the path'
+    'cb'           = 'Copy piped input to the clipboard.',
+                     'Get-Date | cb  # Copy the output as text'
+    'pb'           = 'Get the clipboard text.',
+                     'pb | wc -l  # Count the lines on the clipboard'
+    'open'         = 'Open a file with its default program.',
+                     'open report.xlsx  # Open the file'
+    'ep'           = 'Open the profile in Notepad.',
+                     'ep  # Edit the profile'
+    'reload'       = 'Load the profile again.',
+                     'reload  # Use the changes to the profile'
     'delta'        = 'Show the differences between two files. Office files are compared as text.',
                      'delta old.docx new.docx  # Changes between two Word files'
     'Update-Index' = 'Build or refresh the file index for ShareRoots.',
@@ -1294,25 +1387,35 @@ function global:head([string]$Path, [Alias('n')][int]$Count = 10) {
     if ($Path) { Get-Content -LiteralPath $Path -TotalCount $Count } else { $input | Select-Object -First $Count }
 }
 
-function global:tail([string]$Path, [Alias('n')][int]$Count = 10) {
-    if ($Path) { Get-Content -LiteralPath $Path -Tail $Count } else { $input | Select-Object -Last $Count }
+function global:tail([string]$Path, [Alias('n')][int]$Count = 10, [Alias('f')][switch]$Follow) {
+    if ($Path) { Get-Content -LiteralPath $Path -Tail $Count -Wait:$Follow } else { $input | Select-Object -Last $Count }
 }
 
 function global:wc {
-    $texts = @(if ($args.Count) {
-        foreach ($p in $args) { @{ Path = $p; Text = Read-PSProfileText $p } }
+    $field = ''
+    $paths = @(foreach ($arg in $args) {
+        if ($arg -ceq '-l') { $field = 'Lines' }
+        elseif ($arg -ceq '-w') { $field = 'Words' }
+        elseif ($arg -ceq '-c' -or $arg -ceq '-m') { $field = 'Chars' }
+        else { $arg }
+    })
+    $texts = @(if ($paths.Count) {
+        foreach ($p in $paths) { @{ Path = $p; Text = Read-PSProfileText $p } }
     } else {
         $lines = @($input | ForEach-Object { "$_" })
         if ($lines.Count) { @{ Path = ''; Text = ($lines -join "`n") + "`n" } }
+        elseif ($field) { @{ Path = ''; Text = '' } }
     })
     foreach ($t in $texts) {
         $s = '' + $t.Text
-        New-Object PSObject -Property @{
+        $counts = @{
             Lines = [regex]::Matches($s, "`n").Count
             Words = [regex]::Matches($s, '\S+').Count
             Chars = $s.Length
             Path  = $t.Path
-        } | Select-Object Lines, Words, Chars, Path
+        }
+        if ($field) { $counts[$field]; continue }
+        New-Object PSObject -Property $counts | Select-Object Lines, Words, Chars, Path
     }
 }
 
@@ -1387,6 +1490,10 @@ function global:prompt {
     if ($state) { Write-Host "[index $state] " -ForegroundColor Yellow -NoNewline }
     $loc = Get-Location
     $p = $loc.Path
+    if ($p -ne $global:PSProfileLastPwd) {
+        if ($global:PSProfileLastPwd) { $global:PSProfileOldPwd = $global:PSProfileLastPwd }
+        $global:PSProfileLastPwd = $p
+    }
     if ($loc.Provider.Name -eq 'FileSystem') { $p = $loc.ProviderPath }
     $sep = '\'
     if ($p.StartsWith('/')) { $sep = '/' }

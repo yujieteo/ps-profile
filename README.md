@@ -16,7 +16,7 @@ The profile adds these commands:
 |---|---|
 | `fd` | Find files by name. Use `-Ext`, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Uses the file index for folders under `ShareRoots`. |
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. |
-| `rg` (alias `grep`) | Search file content. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
@@ -24,11 +24,11 @@ The profile adds these commands:
 | `du` | Show folder sizes as a tree, largest first. Use `-Depth` to change the number of levels. |
 | `tldr` | Show examples for the profile commands. Run `tldr` with no argument to list the commands. |
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
-| `cd` | Change folder. Records the visit for `z`. |
+| `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
 | `delta` | Show the differences between two files. The command compares Office files as text. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
-| `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. |
+| `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. `wc` takes `-l`, `-w` and `-c`. `tail -f` shows new lines as they arrive. |
 | `mkcd`, `up`, `..`, `...` | Create and enter a folder, or go to a parent folder. |
 | `open` | Open a file with its default program. |
 | `ep`, `reload` | Open the profile in Notepad. Load the profile again. |
@@ -73,6 +73,8 @@ The `fd` command uses a file index for network shares and mapped drives. Set the
 $global:ShareRoots = @('S:\Finance', '\\fileserver\public')
 ```
 
+An upgrade replaces the profile file, and this setting with it. To keep your share roots after an upgrade, put them in `$env:LOCALAPPDATA\ps-profile\share-roots.txt`, one folder on each line. The profile adds these folders to `$ShareRoots` at load.
+
 - You can use mapped drive letters. The profile converts them to the UNC path that Windows shows for the drive.
 - The profile checks `$ShareRoots` at load. An entry that is not a non-empty string, or a drive letter that is not a mapped network drive, gives a warning. The warning starts with `$ShareRoots:` and shows the example `'S:\Finance'`. The profile skips an entry that is not a non-empty string.
 - Run `Update-Index` to build or refresh the index for all share roots.
@@ -91,6 +93,7 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 - `index.lock`: exists only while an index build runs.
 - `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
+- `share-roots.txt`: your share roots, if you create this file.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
 
@@ -106,25 +109,15 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 
-## Check
-
-Run the check before you change the profile. It needs Nix and a network connection for the first run:
-
-```text
-nix shell nixpkgs#powershell nixpkgs#git -c pwsh -NoProfile -File check.ps1
-```
-
-The check parses the files, bans comments, and runs PSScriptAnalyzer with the rules for PowerShell 5.1. It finds unused functions and runs `tests.ps1` in ConstrainedLanguage mode with strict mode. It replays the tests on `origin/main` and on your files. The replay fails when an output differs.
-
 ## Release
 
 The current version is 1.2.0. See [CHANGELOG.md](CHANGELOG.md).
 
 After the change merges to the default branch:
 
-1. Run `git tag v1.1.0` on the merged commit.
-2. Run `git push origin v1.1.0`.
-3. Create a GitHub release for the tag `v1.1.0`.
+1. Run `git tag v1.2.0` on the merged commit.
+2. Run `git push origin v1.2.0`.
+3. Create a GitHub release for the tag `v1.2.0`.
 4. Attach `Microsoft.PowerShell_profile.ps1` to the release.
 
 ## License
