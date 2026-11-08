@@ -118,13 +118,13 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 
 ## Release
 
-The current version is 1.2.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 1.3.0. See [CHANGELOG.md](CHANGELOG.md).
 
 After the change merges to the default branch:
 
-1. Run `git tag v1.2.0` on the merged commit.
-2. Run `git push origin v1.2.0`.
-3. Create a GitHub release for the tag `v1.2.0`.
+1. Run `git tag v1.3.0` on the merged commit.
+2. Run `git push origin v1.3.0`.
+3. Create a GitHub release for the tag `v1.3.0`.
 4. Attach `Microsoft.PowerShell_profile.ps1` to the release.
 
 ## License

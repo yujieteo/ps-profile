@@ -7,7 +7,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+## [1.3.0] - 2026-11-08
+
+### Added in 1.3.0
 
 - `rg` and `grep` filter piped text, for example `ipconfig | rg IPv4`. A piped full path that exists is still searched as a file.
 - `cd -` goes back to the previous folder. Windows PowerShell 5.1 does not have this.
@@ -23,7 +25,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `fd` and `rg` skip the files that `.gitignore` ignores, and do not enter ignored folders. Use `fd -I` or `rg -u` to include them.
 - `bat` colors comments over many lines.
 
-### Changed
+### Changed in 1.3.0
 
 - `rg` and `fd` use smart case. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Before this change, `rg` was always case-sensitive and `fd` always ignored case.
 - `fd` hides hidden files and dot files. Use `-H` to show them.
