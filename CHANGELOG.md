@@ -7,6 +7,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `sd` replaces text in files. It shows a preview until you add `-Apply`, and it keeps the encoding and the line endings of each file.
+- `sd-undo` restores the files that the last `sd -Apply` changed.
+- `rnm` renames files by regex. It shows a preview until you add `-Apply`. It stops on a name conflict and undoes its renames if one fails.
+- `doctor` checks the language mode, the data folders, the commands that the profile needs, the share roots and the index.
+- `canrun` shows if AppLocker allows a program for you.
+- The prompt shows the Git branch. It reads `.git/HEAD` and does not need `git.exe`.
+
 ## [1.3.0] - 2026-11-08
 
 ### Added in 1.3.0

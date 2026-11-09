@@ -6,6 +6,7 @@ if (-not (Test-Path -LiteralPath $global:PSProfileDataDir)) {
     New-Item -ItemType Directory -Path $global:PSProfileDataDir -Force | Out-Null
 }
 if (-not $global:PSProfileIndexCache) { $global:PSProfileIndexCache = @{} }
+$global:PSProfileSdUndoDir = Join-Path $global:PSProfileDataDir 'sd-undo'
 $global:PSProfileRootsFile = Join-Path $global:PSProfileDataDir 'share-roots.txt'
 if (Test-Path -LiteralPath $global:PSProfileRootsFile) {
     $global:ShareRoots += @(Get-Content -LiteralPath $global:PSProfileRootsFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -14,6 +15,7 @@ if (Test-Path -LiteralPath $global:PSProfileRootsFile) {
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     $global:PSProfileByteArgs = @{ Encoding = 'Byte' }
     $global:PSProfileAnsi = 'Default'
+    $global:PSProfileUtf8Bom = 'UTF8'
     $global:PSDefaultParameterValues['Out-File:Encoding'] = 'UTF8'
     $global:PSDefaultParameterValues['Set-Content:Encoding'] = 'UTF8'
     $global:PSDefaultParameterValues['Add-Content:Encoding'] = 'UTF8'
@@ -21,6 +23,7 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 } else {
     $global:PSProfileByteArgs = @{ AsByteStream = $true }
     $global:PSProfileAnsi = 1252
+    $global:PSProfileUtf8Bom = 'utf8BOM'
     $global:PSDefaultParameterValues['Out-File:Encoding'] = 'utf8NoBOM'
     $global:PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8NoBOM'
     $global:PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8NoBOM'
@@ -84,21 +87,31 @@ function global:Get-PSProfileItemPath($Item) {
     "$Item"
 }
 
-function global:Read-PSProfileText {
-    [OutputType([string])]
+function global:Read-PSProfileEncoded {
+    [OutputType([hashtable])]
     param([string]$Path)
     $byteArgs = $global:PSProfileByteArgs
     $b = @(Get-Content -LiteralPath $Path -TotalCount 4 @byteArgs -ErrorAction SilentlyContinue)
     $enc = 'UTF8'
-    if ($b.Count -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { $enc = 'Unicode' }
-    elseif ($b.Count -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { $enc = 'BigEndianUnicode' }
+    $bom = $false
+    if ($b.Count -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { $enc = 'Unicode'; $bom = $true }
+    elseif ($b.Count -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { $enc = 'BigEndianUnicode'; $bom = $true }
+    elseif ($b.Count -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $bom = $true }
     $text = Get-Content -LiteralPath $Path -Raw -Encoding $enc -ErrorAction SilentlyContinue
-    if ($null -eq $text) { return '' }
+    if ($null -eq $text) { return @{ Text = ''; Enc = $enc; Bom = $bom } }
     if ($enc -eq 'UTF8' -and $text.IndexOf([char]0xFFFD) -ge 0) {
         $text = Get-Content -LiteralPath $Path -Raw -Encoding $global:PSProfileAnsi
+        $enc = $global:PSProfileAnsi
+        $bom = $false
     }
-    if ($text.IndexOf([char]0) -ge 0) { return $null }
-    $text
+    if ($text.IndexOf([char]0) -ge 0) { $text = $null }
+    @{ Text = $text; Enc = $enc; Bom = $bom }
+}
+
+function global:Read-PSProfileText {
+    [OutputType([string])]
+    param([string]$Path)
+    (Read-PSProfileEncoded $Path).Text
 }
 
 function global:Split-PSProfileLines([string]$Text) {
@@ -1513,6 +1526,554 @@ function global:Get-PSProfileHistory {
     }
 }
 
+function global:Test-PSProfileWholeShare {
+    [OutputType([bool])]
+    param([string]$Full)
+    $unc = ConvertTo-PSProfileUnc $Full
+    $root = Find-PSProfileRoot $unc
+    $unc -match '^\\\\[^\\]+\\[^\\]+\\?$' -or [bool]($root -and $unc.TrimEnd('\', '/') -eq $root.Unc)
+}
+
+function global:Get-PSProfileReplacer {
+    param(
+        [string]$Command,
+        [string]$Pattern,
+        [string]$Replacement,
+        [bool]$IgnoreCase,
+        [bool]$CaseSensitive,
+        [bool]$SimpleMatch,
+        [bool]$Word
+    )
+    $rx = $Pattern
+    $rep = $Replacement
+    if ($SimpleMatch) {
+        $rx = [regex]::Escape($Pattern)
+        $rep = $Replacement -replace '\$', '$$$$'
+    }
+    if ($Word) { $rx = '\b(?:' + $rx + ')\b' }
+    try {
+        $null = '' -match $rx
+    } catch {
+        Write-Error "${Command}: '$Pattern' is not a valid pattern. Use -F for plain text."
+        return
+    }
+    $ignore = $IgnoreCase -or (-not $CaseSensitive -and -not (Test-PSProfileUpper $Pattern))
+    @{ Rx = $rx; Rep = $rep; Case = (-not $ignore) }
+}
+
+function global:Read-PSProfileBytes([string]$Path) {
+    $byteArgs = $global:PSProfileByteArgs
+    $bytes = Get-Content -LiteralPath $Path -ReadCount 0 @byteArgs -ErrorAction Stop
+    if ($null -eq $bytes) { return , @() }
+    if ($bytes -isnot [array]) { $bytes = @($bytes) }
+    , $bytes
+}
+
+function global:Test-PSProfileSameBytes([object[]]$A, [object[]]$B) {
+    if ($A.Count -ne $B.Count) { return $false }
+    ($A -join ',') -ceq ($B -join ',')
+}
+
+function global:Write-PSProfileEncoded {
+    param([string]$Path, [string]$Text, [hashtable]$Source)
+    $utf8 = "$($Source.Enc)" -eq 'UTF8'
+    $enc = $Source.Enc
+    if ($utf8) { $enc = $global:PSProfileUtf8Bom }
+    Set-Content -LiteralPath $Path -Value $Text -NoNewline -Encoding $enc -ErrorAction Stop
+    if (-not $utf8 -or $Source.Bom) { return }
+    $b = Read-PSProfileBytes $Path
+    if ($b.Count -lt 3 -or $b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { return }
+    if ($b.Count -eq 3) { Clear-Content -LiteralPath $Path -ErrorAction Stop; return }
+    $byteArgs = $global:PSProfileByteArgs
+    Set-Content -LiteralPath $Path -Value ($b[3..($b.Count - 1)]) @byteArgs -WarningAction SilentlyContinue -ErrorAction Stop
+}
+
+function global:Write-PSProfileBytes {
+    param([string]$Path, [object[]]$Bytes)
+    $byteArgs = $global:PSProfileByteArgs
+    if ($Bytes.Count) { Set-Content -LiteralPath $Path -Value $Bytes @byteArgs -Force -WarningAction SilentlyContinue -ErrorAction Stop }
+    else { Clear-Content -LiteralPath $Path -Force -ErrorAction Stop }
+}
+
+function global:Save-PSProfileUndo([string]$Copy, [hashtable]$Undo) {
+    if (-not $Undo.Ready) {
+        Remove-Item -LiteralPath $Undo.Dir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $Undo.Dir -Force -ErrorAction Stop | Out-Null
+        $Undo.Ready = $true
+    }
+    $Undo.N++
+    $name = "$($Undo.N).orig"
+    Copy-Item -LiteralPath $Copy -Destination (Join-Path $Undo.Dir $name) -Force -ErrorAction Stop
+    $name
+}
+
+function global:Update-PSProfileTextFile {
+    [OutputType([bool])]
+    param($File, [hashtable]$Source, [string]$OldText, [string]$NewText, [hashtable]$Undo)
+    $stem = Join-Path $env:TEMP ('ps-profile-sd-' + (Get-Random))
+    $keep = "$stem.orig"
+    $next = "$stem.new"
+    $stage = "$stem.stage"
+    $keepOriginal = $false
+    try {
+        Write-PSProfileEncoded $keep $OldText $Source
+        $original = Read-PSProfileBytes $File.FullName
+        if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $keep) $original)) {
+            Write-Warning "sd: skipped '$($File.FullName)'. The profile cannot write this file back with the same bytes."
+            return $false
+        }
+        Write-PSProfileEncoded $next $NewText $Source
+        $check = '' + (Get-Content -LiteralPath $next -Raw -Encoding $Source.Enc -ErrorAction Stop)
+        if ($check -cne $NewText) {
+            Write-Warning "sd: skipped '$($File.FullName)'. Its encoding cannot hold the new text."
+            return $false
+        }
+        $bytes = Read-PSProfileBytes $next
+        if ($bytes.Count) {
+            Write-PSProfileBytes $stage $bytes
+            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $stage) $bytes)) {
+                Write-Warning "sd: skipped '$($File.FullName)'. A test write to a temporary file gave different bytes."
+                return $false
+            }
+        }
+        $now = Get-Item -LiteralPath $File.FullName -Force -ErrorAction Stop
+        if ($now.LastWriteTimeUtc -ne $File.LastWriteTimeUtc -or $now.Length -ne $File.Length) {
+            Write-Warning "sd: skipped '$($File.FullName)'. The file changed during the run."
+            return $false
+        }
+        $slot = Save-PSProfileUndo $keep $Undo
+        try {
+            Write-PSProfileBytes $File.FullName $bytes
+            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $File.FullName) $bytes)) { throw 'The bytes on disk are not the new text.' }
+        } catch {
+            $why = $_.Exception.Message
+            try {
+                Write-PSProfileBytes $File.FullName $original
+                if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $File.FullName) $original)) { throw 'The bytes on disk are not the original.' }
+                Write-Warning "sd: could not write '$($File.FullName)'. The original is back in place. $why"
+            } catch {
+                $keepOriginal = $true
+                Write-Warning "sd: could not write '$($File.FullName)' or put the original back. A copy of the original is at '$keep'. $why"
+            }
+            return $false
+        }
+        try {
+            $written = Get-Item -LiteralPath $File.FullName -Force -ErrorAction Stop
+            Add-Content -LiteralPath (Join-Path $Undo.Dir 'manifest.txt') -Value ("{0}`t{1}`t{2}`t{3}" -f $slot, $written.Length, $written.LastWriteTimeUtc.Ticks, $written.FullName) -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            Write-Warning "sd: changed '$($File.FullName)', but sd-undo cannot restore it. $($_.Exception.Message)"
+        }
+        $true
+    } catch {
+        Write-Warning "sd: skipped '$($File.FullName)'. $($_.Exception.Message)"
+        $false
+    } finally {
+        Remove-Item -LiteralPath $next, $stage -Force -ErrorAction SilentlyContinue
+        if (-not $keepOriginal) { Remove-Item -LiteralPath $keep -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function global:sd-undo {
+    [CmdletBinding()]
+    param()
+    $dir = $global:PSProfileSdUndoDir
+    $manifest = Join-Path $dir 'manifest.txt'
+    if (-not (Test-Path -LiteralPath $manifest)) { Write-Host 'sd-undo: nothing to undo.' -ForegroundColor DarkGray; return }
+    $left = @()
+    $restored = 0
+    foreach ($line in @(Get-Content -LiteralPath $manifest -Encoding UTF8)) {
+        $f = $line.Split("`t")
+        $item = Get-Item -LiteralPath $f[3] -Force -ErrorAction SilentlyContinue
+        if (-not $item -or $item.Length -ne [long]$f[1] -or $item.LastWriteTimeUtc.Ticks -ne [long]$f[2]) {
+            Write-Warning "sd-undo: skipped '$($f[3])'. The file changed after sd ran."
+            $left += $line
+            continue
+        }
+        try {
+            $bytes = Read-PSProfileBytes (Join-Path $dir $f[0])
+            Write-PSProfileBytes $f[3] $bytes
+            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $f[3]) $bytes)) { throw 'The bytes on disk are not the original.' }
+            $restored++
+        } catch {
+            Write-Warning "sd-undo: could not restore '$($f[3])'. A copy of the original is at '$(Join-Path $dir $f[0])'. $($_.Exception.Message)"
+            $left += $line
+        }
+    }
+    if ($left.Count) { Set-Content -LiteralPath $manifest -Value $left -Encoding UTF8 }
+    else { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Host ('sd-undo: restored {0} file(s), {1} not restored.' -f $restored, $left.Count) -ForegroundColor Cyan
+}
+
+function global:sd {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Pattern,
+        [Parameter(Mandatory = $true, Position = 1)][AllowEmptyString()][string]$Replacement,
+        [Parameter(Position = 2, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias('FullName')][string[]]$Path,
+        [Alias('i')][switch]$IgnoreCase,
+        [Alias('F')][switch]$SimpleMatch,
+        [Alias('g')][string[]]$Glob,
+        [Alias('w')][switch]$Word,
+        [Alias('s')][switch]$CaseSensitive,
+        [Alias('u')][switch]$NoIgnore,
+        [switch]$Hidden,
+        [int]$MaxSizeMB = 20,
+        [switch]$Apply
+    )
+    begin {
+        $toHost = Test-PSProfileToHost $MyInvocation
+        $r = Get-PSProfileReplacer -Command 'sd' -Pattern $Pattern -Replacement $Replacement -IgnoreCase:$IgnoreCase -CaseSensitive:$CaseSensitive -SimpleMatch:$SimpleMatch -Word:$Word
+        $n = @{ Files = 0; Lines = 0; Written = 0; Failed = 0; ReadOnly = 0; Large = 0; Office = 0; Given = 0 }
+        $done = @{}
+        $undo = @{ Dir = $global:PSProfileSdUndoDir; Ready = $false; N = 0 }
+        $edit = {
+            param($file)
+            $key = $file.FullName.ToLower()
+            if ($done.ContainsKey($key)) { return }
+            $done[$key] = $true
+            if ($file.FullName -match '[\\/]\.git[\\/]') { return }
+            if ([int]$file.Attributes -band 1024) { return }
+            if ($Glob) {
+                $ok = $false
+                foreach ($g in $Glob) { if ($file.Name -like $g) { $ok = $true } }
+                if (-not $ok) { return }
+            }
+            if ($file.Extension -match '^\.(docx|xlsx|pptx|doc|xls|ppt)$') { $n.Office++; return }
+            if ($file.Length -gt $MaxSizeMB * 1MB) { $n.Large++; return }
+            $source = Read-PSProfileEncoded $file.FullName
+            $text = $source.Text
+            if (-not $text) { return }
+            $parts = $text -split '(\r\n|\n|\r)'
+            if ($r.Case) { $any = $parts -cmatch $r.Rx } else { $any = $parts -match $r.Rx }
+            if (-not $any) { return }
+            $lines = 0
+            for ($j = 0; $j -lt $parts.Count; $j += 2) {
+                $old = $parts[$j]
+                if ($r.Case) { $new = $old -creplace $r.Rx, $r.Rep } else { $new = $old -replace $r.Rx, $r.Rep }
+                if ($new -ceq $old) { continue }
+                if ($lines -eq 0 -and $toHost) { Write-Host $file.FullName -ForegroundColor Magenta }
+                $lines++
+                $parts[$j] = $new
+                $ln = $j / 2 + 1
+                if ($toHost) {
+                    Write-Host ('{0}: - {1}' -f $ln, $old) -ForegroundColor Red
+                    Write-Host ('{0}: + {1}' -f $ln, $new) -ForegroundColor Green
+                } else {
+                    New-Object PSObject -Property @{ Path = $file.FullName; LineNumber = $ln; Old = $old; New = $new } | Select-Object Path, LineNumber, Old, New
+                }
+            }
+            if (-not $lines) { return }
+            $n.Files++
+            $n.Lines += $lines
+            if ($toHost) { Write-Host '' }
+            if (-not $Apply) { return }
+            if ([int]$file.Attributes -band 1) { $n.ReadOnly++; return }
+            if (Update-PSProfileTextFile $file $source $text (($parts) -join '') $undo) { $n.Written++ } else { $n.Failed++ }
+        }
+        $editPath = {
+            param($p)
+            $full = Get-PSProfileFullPath $p
+            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+            if (-not $item) { Write-Error "sd: '$p' not found."; return }
+            if (-not $item.PSIsContainer) { & $edit $item; return }
+            if (Test-PSProfileWholeShare $full) { Write-Error "sd: refusing to change a whole share at '$full'. Give a folder or pipe fd results."; return }
+            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not $_.PSIsContainer } | ForEach-Object { & $edit $_ }
+        }
+    }
+    process {
+        if (-not $r) { return }
+        foreach ($p in $Path) {
+            $n.Given++
+            & $editPath $p
+        }
+    }
+    end {
+        if (-not $r) { return }
+        if (-not $n.Given -and -not $MyInvocation.ExpectingInput) { & $editPath '.' }
+        if ($n.Office -or $n.Large) { Write-Warning ('sd: skipped {0} Office file(s) and {1} file(s) over {2} MB.' -f $n.Office, $n.Large, $MaxSizeMB) }
+        if ($n.ReadOnly) { Write-Warning ('sd: skipped {0} read-only file(s).' -f $n.ReadOnly) }
+        if (-not $n.Files) { Write-Host 'sd: no matches.' -ForegroundColor DarkGray; return }
+        if ($Apply) {
+            Write-Host ('sd: changed {0} of {1} file(s), {2} line(s) found.' -f $n.Written, $n.Files, $n.Lines) -ForegroundColor Cyan
+            if ($n.Written) { Write-Host 'Run sd-undo to restore the files.' -ForegroundColor DarkGray }
+        } else {
+            Write-Host ('sd: preview of {0} line(s) in {1} file(s). No file changed. Add -Apply to write.' -f $n.Lines, $n.Files) -ForegroundColor Cyan
+        }
+    }
+}
+
+function global:rnm {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Pattern,
+        [Parameter(Mandatory = $true, Position = 1)][AllowEmptyString()][string]$Replacement,
+        [Parameter(Position = 2, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias('FullName')][string[]]$Path,
+        [Alias('i')][switch]$IgnoreCase,
+        [Alias('F')][switch]$SimpleMatch,
+        [Alias('s')][switch]$CaseSensitive,
+        [Alias('r')][switch]$Recurse,
+        [switch]$Folders,
+        [Alias('H')][switch]$Hidden,
+        [Alias('u')][switch]$NoIgnore,
+        [switch]$Apply
+    )
+    begin {
+        $toHost = Test-PSProfileToHost $MyInvocation
+        $r = Get-PSProfileReplacer -Command 'rnm' -Pattern $Pattern -Replacement $Replacement -IgnoreCase:$IgnoreCase -CaseSensitive:$CaseSensitive -SimpleMatch:$SimpleMatch
+        $piped = $MyInvocation.ExpectingInput
+        $items = @{}
+        $given = @{ N = 0 }
+        $add = {
+            param($i)
+            if ($i.Name -eq '.git' -or $i.FullName -match '[\\/]\.git[\\/]') { return }
+            $items[$i.FullName.ToLower()] = $i
+        }
+        $list = {
+            param($p)
+            $full = Get-PSProfileFullPath $p
+            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+            if (-not $item) { Write-Error "rnm: '$p' not found."; return }
+            if (-not $item.PSIsContainer -or $piped) { & $add $item; return }
+            if ($Recurse -and (Test-PSProfileWholeShare $full)) { Write-Error "rnm: refusing to walk a whole share at '$full'. Give a folder or pipe fd results."; return }
+            $kids = @(if ($Recurse) {
+                Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore)
+            } else {
+                Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue | Where-Object { $Hidden -or -not ($_.Name.StartsWith('.') -or ([int]$_.Attributes -band 2)) }
+            })
+            foreach ($k in $kids) { if ($Folders -or -not $k.PSIsContainer) { & $add $k } }
+        }
+    }
+    process {
+        if (-not $r) { return }
+        foreach ($p in $Path) {
+            $given.N++
+            & $list $p
+        }
+    }
+    end {
+        if (-not $r) { return }
+        if (-not $given.N -and -not $MyInvocation.ExpectingInput) { & $list '.' }
+        $plan = @(foreach ($key in @($items.Keys)) {
+            $i = $items[$key]
+            if ($r.Case) { $name = $i.Name -creplace $r.Rx, $r.Rep } else { $name = $i.Name -replace $r.Rx, $r.Rep }
+            if ($name -ceq $i.Name) { continue }
+            $dir = $i.FullName.Substring(0, $i.FullName.Length - $i.Name.Length).TrimEnd('\', '/')
+            if (-not $dir) { $dir = $i.FullName.Substring(0, 1) }
+            @{ Old = $i.FullName; Dir = $dir; OldName = $i.Name; NewName = $name; New = (Join-Path $dir $name); IsDir = [bool]$i.PSIsContainer; Chain = $false; Tmp = '' }
+        })
+        if (-not $plan.Count) { Write-Host 'rnm: no names to change.' -ForegroundColor DarkGray; return }
+        $plan = @($plan | Sort-Object @{ Expression = { @($_.Old -split '[\\/]').Count }; Descending = $true }, @{ Expression = { $_.Old } })
+        $sources = @{}
+        foreach ($p in $plan) { $sources[$p.Old.ToLower()] = $p }
+        $targets = @{}
+        $problems = @(foreach ($p in $plan) {
+            $bad = $p.NewName -match '[<>:"/\\|?*\x00-\x1F]|[. ]$|^$' -or $p.NewName -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$'
+            if ($bad) { "'$($p.OldName)' would get the name '$($p.NewName)', which is not a valid file name."; continue }
+            $key = $p.New.ToLower()
+            if ($targets.ContainsKey($key)) { "'$($p.OldName)' and '$($targets[$key].OldName)' would get the same name '$($p.NewName)'."; continue }
+            $targets[$key] = $p
+            if ($key -eq $p.Old.ToLower() -or -not (Test-Path -LiteralPath $p.New)) { continue }
+            $other = $sources[$key]
+            if (-not $other) { "'$($p.NewName)' already exists, so '$($p.OldName)' cannot take that name."; continue }
+            if ($p.IsDir -or $other.IsDir) { "'$($p.OldName)' would take the name of the folder or file '$($other.OldName)', which also changes. Rename the folders in two steps."; continue }
+            $p.Chain = $true
+            $other.Chain = $true
+        })
+        $dirShown = ''
+        foreach ($p in $plan) {
+            if ($toHost) {
+                if ($p.Dir -cne $dirShown) { Write-Host $p.Dir -ForegroundColor Magenta; $dirShown = $p.Dir }
+                Write-Host ('  ' + $p.OldName) -ForegroundColor Red -NoNewline
+                Write-Host ' -> ' -ForegroundColor DarkGray -NoNewline
+                Write-Host $p.NewName -ForegroundColor Green
+            } else {
+                New-Object PSObject -Property @{ Path = $p.Old; NewName = $p.NewName } | Select-Object Path, NewName
+            }
+        }
+        if ($problems.Count) {
+            foreach ($m in $problems) { Write-Error "rnm: $m" }
+            Write-Host ('rnm: {0} problem(s). No name changed.' -f $problems.Count) -ForegroundColor Yellow
+            return
+        }
+        if (-not $Apply) {
+            Write-Host ('rnm: preview of {0} name(s). No name changed. Add -Apply to rename.' -f $plan.Count) -ForegroundColor Cyan
+            return
+        }
+        $journal = @{}
+        $move = {
+            param($From, $Dir, $Name)
+            Rename-Item -LiteralPath $From -NewName $Name -Force -ErrorAction Stop
+            $journal[$journal.Count] = @{ From = $From; To = (Join-Path $Dir $Name); Back = ($From -split '[\\/]')[-1] }
+        }
+        $stamp = 'ps-profile-rnm-' + (Get-Random)
+        $seq = 0
+        try {
+            foreach ($p in $plan) {
+                if (-not $p.Chain) { continue }
+                $seq++
+                $p.Tmp = "$stamp-$seq"
+                & $move $p.Old $p.Dir $p.Tmp
+            }
+            foreach ($p in $plan) {
+                if ($p.Chain) { & $move (Join-Path $p.Dir $p.Tmp) $p.Dir $p.NewName; continue }
+                if ($p.Old -ieq $p.New) {
+                    $seq++
+                    $via = "$stamp-$seq"
+                    & $move $p.Old $p.Dir $via
+                    & $move (Join-Path $p.Dir $via) $p.Dir $p.NewName
+                    continue
+                }
+                & $move $p.Old $p.Dir $p.NewName
+            }
+        } catch {
+            Write-Error "rnm: a rename failed, so the renames made so far are being undone. $($_.Exception.Message)"
+            for ($k = $journal.Count - 1; $k -ge 0; $k--) {
+                $j = $journal[$k]
+                try { Rename-Item -LiteralPath $j.To -NewName $j.Back -Force -ErrorAction Stop }
+                catch { Write-Error "rnm: could not undo '$($j.To)'. Its old name is '$($j.Back)'." }
+            }
+            return
+        }
+        Write-Host ('rnm: renamed {0} item(s).' -f $plan.Count) -ForegroundColor Cyan
+    }
+}
+
+function global:Get-PSProfileAppLocker {
+    [OutputType([hashtable])]
+    param()
+    $state = @{ Available = $false; Policy = $null; Rules = 0; Audit = $false; Error = '' }
+    if (-not (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue) -or -not (Get-Command Test-AppLockerPolicy -ErrorAction SilentlyContinue)) { return $state }
+    $state.Available = $true
+    try {
+        $state.Policy = Get-AppLockerPolicy -Effective -ErrorAction Stop
+    } catch {
+        $state.Error = $_.Exception.Message
+        return $state
+    }
+    if (-not $state.Policy.PSObject.Properties['RuleCollections']) {
+        $state.Rules = -1
+        return $state
+    }
+    foreach ($c in @(Get-PSProfileProperty $state.Policy 'RuleCollections')) {
+        if ($null -eq $c) { continue }
+        $state.Rules += @($c).Count
+        if ("$(Get-PSProfileProperty $c 'EnforcementMode')" -match 'Audit') { $state.Audit = $true }
+    }
+    $state
+}
+
+function global:canrun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Path,
+        [string]$User = "$env:USERDOMAIN\$env:USERNAME"
+    )
+    $toHost = Test-PSProfileToHost $MyInvocation
+    $target = ''
+    $file = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($file -and -not $file.PSIsContainer) { $target = $file.FullName }
+    if (-not $target) {
+        $c = Get-Command -Name $Path -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { $target = $c.Source }
+    }
+    if (-not $target) { Write-Error "canrun: '$Path' is not a file or a program on the Path."; return }
+    $state = Get-PSProfileAppLocker
+    if (-not $state.Available) { Write-Error 'canrun: this computer does not have the AppLocker commands, so canrun cannot check.'; return }
+    if ($state.Error) { Write-Error "canrun: could not read the AppLocker policy. $($state.Error)"; return }
+    if ($state.Rules -eq 0) { Write-Host 'canrun: Group Policy has no AppLocker rules for this computer. Rules from MDM do not show here.' -ForegroundColor DarkGray; return }
+    try {
+        $result = $state.Policy | Test-AppLockerPolicy -Path $target -User $User -ErrorAction Stop | Select-Object -First 1
+    } catch {
+        Write-Error "canrun: the check failed. $($_.Exception.Message)"
+        return
+    }
+    $decision = "$(Get-PSProfileProperty $result 'PolicyDecision')"
+    if (-not $decision) { Write-Error "canrun: AppLocker gave no decision for '$target'."; return }
+    $rule = "$(Get-PSProfileProperty $result 'MatchingRule')"
+    if (-not $toHost) {
+        New-Object PSObject -Property @{ Path = $target; Decision = $decision; Rule = $rule; AuditOnly = $state.Audit } | Select-Object Path, Decision, Rule, AuditOnly
+        return
+    }
+    $color = 'Green'
+    if ($decision -match 'Denied') { $color = 'Red' }
+    Write-Host $decision -ForegroundColor $color -NoNewline
+    Write-Host "  $target"
+    if ($rule) { Write-Host "Rule: $rule" -ForegroundColor DarkGray }
+    if ($state.Audit) { Write-Host 'Some AppLocker rules are in audit mode, so a denied program can still run.' -ForegroundColor Yellow }
+    Write-Host 'This check reads AppLocker rules from Group Policy only. WDAC and MDM policies can also block a program.' -ForegroundColor DarkGray
+}
+
+function global:New-PSProfileCheck([string]$Check, [string]$Status, [string]$Detail) {
+    New-Object PSObject -Property @{ Check = $Check; Status = $Status; Detail = $Detail } | Select-Object Status, Check, Detail
+}
+
+function global:Test-PSProfileWritable {
+    [OutputType([bool])]
+    param([string]$Dir)
+    if (-not $Dir) { return $false }
+    $probe = Join-Path $Dir ('ps-profile-probe-' + (Get-Random))
+    try {
+        Set-Content -LiteralPath $probe -Value '' -ErrorAction Stop
+        Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
+        $true
+    } catch {
+        $false
+    }
+}
+
+function global:doctor {
+    [CmdletBinding()]
+    param()
+    $toHost = Test-PSProfileToHost $MyInvocation
+    $rows = @(
+        New-PSProfileCheck 'Profile version' 'INFO' $global:PSProfileVersion
+        New-PSProfileCheck 'PowerShell version' 'INFO' "$($PSVersionTable.PSVersion)"
+        New-PSProfileCheck 'Language mode' 'INFO' "$($ExecutionContext.SessionState.LanguageMode)"
+        New-PSProfileCheck 'Execution policy' 'INFO' "$(Get-ExecutionPolicy)"
+        foreach ($d in @(@('Data folder', $global:PSProfileDataDir), @('Temp folder', $env:TEMP))) {
+            if (Test-PSProfileWritable $d[1]) { New-PSProfileCheck $d[0] 'OK' $d[1] }
+            else { New-PSProfileCheck $d[0] 'FAIL' "Cannot write to '$($d[1])'." }
+        }
+        $needs = [ordered]@{
+            'Expand-Archive'       = 'rg -Office, bat, delta and the preview of Office files'
+            'Get-Clipboard'        = 'pb'
+            'Set-Clipboard'        = 'cb, cpath, Ctrl+R and Ctrl+T'
+            'Start-Job'            = 'the background index build'
+            'Set-PSReadLineOption' = 'Ctrl+R and Ctrl+T'
+        }
+        foreach ($k in $needs.Keys) {
+            if (Get-Command $k -ErrorAction SilentlyContinue) { New-PSProfileCheck $k 'OK' $needs[$k] }
+            else { New-PSProfileCheck $k 'WARN' "Missing. These do not work: $($needs[$k])." }
+        }
+        $state = Get-PSProfileAppLocker
+        if (-not $state.Available) { New-PSProfileCheck 'AppLocker' 'WARN' 'The AppLocker commands are missing, so canrun does not work.' }
+        elseif ($state.Error) { New-PSProfileCheck 'AppLocker' 'WARN' "Cannot read the policy: $($state.Error)" }
+        elseif ($state.Rules -lt 0) { New-PSProfileCheck 'AppLocker' 'WARN' 'Cannot count the rules in the policy.' }
+        elseif ($state.Rules -eq 0) { New-PSProfileCheck 'AppLocker' 'INFO' 'No rules in Group Policy. Rules from MDM do not show here.' }
+        elseif ($state.Audit) { New-PSProfileCheck 'AppLocker' 'INFO' "$($state.Rules) rule(s), some in audit mode." }
+        else { New-PSProfileCheck 'AppLocker' 'INFO' "$($state.Rules) rule(s)." }
+        if (-not $global:PSProfileRoots.Count) { New-PSProfileCheck 'Share roots' 'INFO' 'None set.' }
+        foreach ($root in $global:PSProfileRoots) {
+            if (Test-Path -LiteralPath $root.Unc) { New-PSProfileCheck 'Share root' 'OK' $root.Unc }
+            else { New-PSProfileCheck 'Share root' 'FAIL' "Cannot reach '$($root.Unc)'." }
+            $idx = Get-Item -LiteralPath "$($root.Base).idx" -ErrorAction SilentlyContinue
+            if (-not $idx) { New-PSProfileCheck 'Index' 'WARN' "No index for '$($root.Unc)'. Run Update-Index."; continue }
+            $hours = ((Get-Date) - $idx.LastWriteTime).TotalHours
+            if ($hours -gt 24) { New-PSProfileCheck 'Index' 'WARN' ("'{0}' is {1:0} hours old. Run Update-Index." -f $root.Unc, $hours) }
+            else { New-PSProfileCheck 'Index' 'OK' ("'{0}' is {1:0} hours old." -f $root.Unc, $hours) }
+        }
+    )
+    if (-not $toHost) { return $rows }
+    $colors = @{ OK = 'Green'; INFO = 'DarkGray'; WARN = 'Yellow'; FAIL = 'Red' }
+    foreach ($row in $rows) {
+        Write-Host ('{0,-5} ' -f $row.Status) -ForegroundColor $colors[$row.Status] -NoNewline
+        Write-Host ('{0,-21} ' -f $row.Check) -ForegroundColor Cyan -NoNewline
+        Write-Host $row.Detail
+    }
+}
+
 $global:PSProfileTldr = [ordered]@{
     'fd'           = 'Find files by name. Uses the index under ShareRoots.',
                      'fd report  # Files and folders with report in the name',
@@ -1611,6 +2172,26 @@ $global:PSProfileTldr = [ordered]@{
     'delta'        = 'Show the differences between two files. Office files are compared as text.',
                      'delta old.docx new.docx  # Changes between two Word files',
                      'delta -s old.txt new.txt  # Side by side'
+    'sd'           = 'Replace text in files. Shows a preview until you add -Apply.',
+                     "sd 'old' 'new'  # Preview the changes under the current folder",
+                     "sd 'old' 'new' -Apply  # Write the changes",
+                     "sd 'v(\d+)' 'version `$1' notes.txt  # Use a regex group. Use single quotes.",
+                     "sd -F 'a.b' 'a_b'  # Plain text, not a regex",
+                     "sd -g *.txt 'old' 'new'  # Only .txt files",
+                     "fd -e csv | sd 'old' 'new' -Apply  # Only the files that fd finds"
+    'sd-undo'      = 'Restore the files that the last sd -Apply changed.',
+                     'sd-undo  # Skips a file that changed after sd ran'
+    'rnm'        = 'Rename files by regex. Shows a preview until you add -Apply.',
+                     "rnm 'draft' 'final'  # Preview for the current folder",
+                     "rnm 'draft' 'final' -Apply  # Rename the files",
+                     "rnm '^(\d+)-' 'item-`$1-' -r  # Also in subfolders",
+                     "rnm 'old' 'new' -Folders  # Also rename folders",
+                     "fd -t d temp | rnm 'temp' 'tmp'  # Rename the folders that fd finds"
+    'doctor'       = 'Check what the profile can use on this computer.',
+                     'doctor  # Language mode, folders, commands, share roots and index'
+    'canrun'       = 'Show if AppLocker allows a program for you.',
+                     'canrun C:\Tools\app.exe  # Check a file',
+                     'canrun python  # Check a program on the Path'
     'Update-Index' = 'Build or refresh the file index for ShareRoots.',
                      'Update-Index  # All share roots',
                      "Update-Index 'S:\Finance\2026'  # One folder"
@@ -1814,6 +2395,36 @@ function global:cb {
     else { Set-Clipboard -Value (($items | Out-String -Width 4096).TrimEnd()) }
 }
 
+function global:Find-PSProfileGitDir {
+    [OutputType([string])]
+    param([string]$Path)
+    if (-not $Path -or (ConvertTo-PSProfileUnc $Path) -like '\\*') { return '' }
+    $dir = $Path
+    while ($dir) {
+        $git = Join-Path $dir '.git'
+        if (Test-Path -LiteralPath $git -PathType Container) { return $git }
+        if (Test-Path -LiteralPath $git -PathType Leaf) {
+            $line = Get-Content -LiteralPath $git -TotalCount 1 -ErrorAction SilentlyContinue
+            if ($line -notmatch '^gitdir:\s*(.+)$') { return '' }
+            $target = $Matches[1]
+            if ($target -notmatch '^([A-Za-z]:|[\\/])') { $target = Join-Path $dir $target }
+            return $target
+        }
+        $dir = Split-Path -Parent $dir
+    }
+    ''
+}
+
+function global:Get-PSProfileGitBranch {
+    [OutputType([string])]
+    param([string]$GitDir)
+    if (-not $GitDir) { return '' }
+    $head = Get-Content -LiteralPath (Join-Path $GitDir 'HEAD') -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($head -match '^ref: refs/heads/(.+)$') { return $Matches[1] }
+    if ($head -match '^[0-9a-f]{7}') { return $Matches[0] }
+    ''
+}
+
 function global:prompt {
     $ok = $?
     $h = Get-History -Count 1
@@ -1830,6 +2441,10 @@ function global:prompt {
     if ($p -ne $global:PSProfileLastPwd) {
         if ($global:PSProfileLastPwd) { $global:PSProfileOldPwd = $global:PSProfileLastPwd }
         $global:PSProfileLastPwd = $p
+        $global:PSProfileGitDir = ''
+        if ($loc.Provider.Name -eq 'FileSystem') {
+            try { $global:PSProfileGitDir = Find-PSProfileGitDir $loc.ProviderPath } catch { $global:PSProfileGitDir = '' }
+        }
     }
     if ($loc.Provider.Name -eq 'FileSystem') { $p = $loc.ProviderPath }
     $sep = '\'
@@ -1837,6 +2452,8 @@ function global:prompt {
     $parts = @($p -split '[\\/]' | Where-Object { $_ })
     if ($parts.Count -gt 3) { $p = '..' + $sep + $parts[-2] + $sep + $parts[-1] }
     Write-Host $p -ForegroundColor Cyan -NoNewline
+    $branch = Get-PSProfileGitBranch $global:PSProfileGitDir
+    if ($branch) { Write-Host " ($branch)" -ForegroundColor Magenta -NoNewline }
     '> '
 }
 

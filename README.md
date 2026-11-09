@@ -26,6 +26,10 @@ The profile adds these commands:
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
 | `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
 | `delta` | Show the differences between two files. Use `-s` for side by side. The command compares Office files as text. |
+| `sd` | Replace text in files, line by line. It shows a preview and changes no file until you add `-Apply`. It keeps the encoding and the line endings of each file. It skips dot files and the files that `.gitignore` ignores. Use `-Hidden` or `-u` to include them. Other options are `-F`, `-w`, `-i`, `-s` and `-g`. `sd-undo` restores the files that the last `-Apply` changed. |
+| `rnm` | Rename files by regex. It shows a preview and changes no name until you add `-Apply`. Use `-r` for subfolders and `-Folders` to rename folders too. A name conflict stops the whole run. If a rename fails, the command undoes the renames that it made. |
+| `doctor` | Check the language mode, the data folders, the commands that the profile needs, the share roots and the index. |
+| `canrun` | Show if AppLocker allows a program for you. It reads AppLocker rules from Group Policy only. It does not see AppLocker rules from MDM or WDAC policies. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
 | `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. `wc` takes `-l`, `-w` and `-c`. `tail -f` shows new lines as they arrive. |
@@ -59,6 +63,8 @@ Press Tab after `z` or `zi` to complete a folder from the history. Press Tab aft
 ## Prompt
 
 The prompt shows the current folder. It also shows the time of commands that take more than 2 seconds.
+
+In a Git repository, the prompt shows the branch after the folder. The prompt reads `.git/HEAD` and does not need `git.exe`. To keep the prompt fast, it does not show the branch on network paths.
 
 ## Install
 
@@ -100,8 +106,11 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 - `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 - `share-roots.txt`: your share roots, if you create this file.
+- `sd-undo`: copies of the files that the last `sd -Apply` changed. The next `sd -Apply` replaces them.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
+
+`sd -Apply` writes temporary copies to `$env:TEMP` and deletes them after each file. If a write fails, `sd` puts the original back. If it cannot, it keeps a copy of the original there and shows its path.
 
 ## ConstrainedLanguage limits
 
@@ -116,6 +125,9 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Becaus
 - `bat` colors files of up to 5000 lines.
 - `fd` and `rg` read `.gitignore` files and `.git/info/exclude`. They do not read the global Git ignore file.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
+- `sd` matches one line at a time, so a pattern cannot span lines. It does not change Office files, binary files, read-only files or files over 20 MB.
+- `sd-undo` restores only the last `sd -Apply` run, and it skips a file that changed after that run.
+- `sd` skips a file if it cannot write the file back with the same bytes, or if the file encoding cannot hold the new text.
 
 ## Release
 
