@@ -1,4 +1,4 @@
-$global:PSProfileVersion = '1.4.0'
+$global:PSProfileVersion = '1.4.1'
 $global:ShareRoots = @()
 
 $global:PSProfileDataDir = Join-Path $env:LOCALAPPDATA 'ps-profile'
@@ -91,12 +91,14 @@ function global:Read-PSProfileEncoded {
     [OutputType([hashtable])]
     param([string]$Path)
     $byteArgs = $global:PSProfileByteArgs
-    $b = @(Get-Content -LiteralPath $Path -TotalCount 4 @byteArgs -ErrorAction SilentlyContinue)
+    $b = Get-Content -LiteralPath $Path -TotalCount 1024 -ReadCount 0 @byteArgs -ErrorAction SilentlyContinue
+    if ($null -eq $b) { $b = @() } elseif ($b -isnot [array]) { $b = @($b) }
     $enc = 'UTF8'
     $bom = $false
     if ($b.Count -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { $enc = 'Unicode'; $bom = $true }
     elseif ($b.Count -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { $enc = 'BigEndianUnicode'; $bom = $true }
     elseif ($b.Count -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $bom = $true }
+    if ($enc -eq 'UTF8' -and $b -contains 0) { return @{ Text = $null; Enc = $enc; Bom = $bom } }
     $text = Get-Content -LiteralPath $Path -Raw -Encoding $enc -ErrorAction SilentlyContinue
     if ($null -eq $text) { return @{ Text = ''; Enc = $enc; Bom = $bom } }
     if ($enc -eq 'UTF8' -and $text.IndexOf([char]0xFFFD) -ge 0) {
@@ -346,10 +348,12 @@ $global:PSProfileIndexBuilder = {
                         $kids = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue -ErrorVariable listErr)
                         if ($listErr.Count -and $line) { $failed = $true }
                         else {
-                            $files = @($kids | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
-                                $_.Name + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks
+                            $files = @(foreach ($k in $kids) {
+                                if (-not $k.PSIsContainer) { $k.Name + '|' + $k.Length + '|' + $k.LastWriteTimeUtc.Ticks }
                             }) -join '|'
-                            $subs = @($kids | Where-Object { $_.PSIsContainer -and -not ([int]$_.Attributes -band 1024) } | ForEach-Object { $_.Name }) -join '|'
+                            $subs = @(foreach ($k in $kids) {
+                                if ($k.PSIsContainer -and -not ([int]$k.Attributes -band 1024)) { $k.Name }
+                            }) -join '|'
                             $line = "$ticks`t$dir`t$files`t$subs"
                         }
                     }
@@ -482,10 +486,15 @@ function global:Test-PSProfileIgnored {
     [OutputType([bool])]
     param([string]$FullName, [bool]$IsDir, [object[]]$Rules)
     $ignored = $false
+    $base = $null
+    $rel = ''
     foreach ($r in $Rules) {
         if ($ignored -ne $r.Negate) { continue }
         if ($r.DirOnly -and -not $IsDir) { continue }
-        $rel = $FullName.Substring($r.Base.Length).TrimStart('\', '/') -replace '\\', '/'
+        if ($r.Base -cne $base) {
+            $base = $r.Base
+            $rel = $FullName.Substring($base.Length).TrimStart('\', '/') -replace '\\', '/'
+        }
         if ($rel -match $r.Rx) { $ignored = -not $r.Negate }
     }
     $ignored
@@ -591,7 +600,8 @@ function global:Find-PSProfileFile {
     $typedPrefix = $typed.TrimEnd('\', '/') + $sep
     $full = $Pattern
     if ($full.StartsWith('^')) { $full = '(?:^|[\\/])' + $full.Substring(1) }
-    $hits = @($lines) -match $full
+    $hits = @($lines)
+    if ($full -ne '.') { $hits = $hits -match $full }
     $hits = $hits -like ("*`t" + ($uncPrefix -replace '([\[\]\*\?`])', '`$1') + '*')
     if ($extRx) { $hits = $hits -match $extRx }
     if ($since) { $hits = $hits -ge $since }
@@ -934,15 +944,15 @@ function global:fzf {
         $total = $cand.Count
         if ($tokens.Count) {
             if ($cand.Count -gt 5000) { $cand = $cand[0..4999] }
-            $top = @($cand | ForEach-Object {
-                $t = $_
+            $lowerTokens = @(foreach ($tok in $tokens) { $tok.ToLower() })
+            $top = @(@(foreach ($t in $cand) {
                 $lower = $t.ToLower()
                 $leaf = $t.LastIndexOf('\')
                 if ($t.LastIndexOf('/') -gt $leaf) { $leaf = $t.LastIndexOf('/') }
                 $leaf++
                 $score = - $t.Length / 20
                 for ($k = 0; $k -lt $tokens.Count; $k++) {
-                    $at = $lower.IndexOf($tokens[$k].ToLower())
+                    $at = $lower.IndexOf($lowerTokens[$k])
                     if ($at -ge 0) { $score += 100 } else {
                         $m = [regex]::Match($t, $rxs[$k])
                         $at = $m.Index
@@ -952,8 +962,8 @@ function global:fzf {
                     if ($at -eq $leaf) { $score += 25 }
                     if ($at -eq 0 -or $t.Substring($at - 1, 1) -match '[^A-Za-z0-9]') { $score += 15 }
                 }
-                New-Object PSObject -Property @{ Text = $t; Score = $score }
-            } | Sort-Object Score -Descending | Select-Object -First $maxRows | ForEach-Object { $_.Text })
+                @{ Text = $t; Score = $score }
+            }) | Sort-Object { $_.Score } -Descending | Select-Object -First $maxRows | ForEach-Object { $_.Text })
         } else {
             $top = @($cand | Select-Object -First $maxRows)
         }
@@ -1423,9 +1433,9 @@ function global:du {
     $own = @{}
     $entries = $null
     if (Find-PSProfileRoot (ConvertTo-PSProfileUnc $top)) {
-        $entries = @(Find-PSProfileFile -Path $top -Meta | ForEach-Object {
-            $f = $_.Split("`t")
-            New-Object PSObject -Property @{ FullName = $f[2]; PSIsContainer = (-not $f[1]); Length = [long]('0' + $f[1]) }
+        $entries = @(foreach ($line in @(Find-PSProfileFile -Path $top -Meta)) {
+            $f = $line.Split("`t")
+            @{ FullName = $f[2]; PSIsContainer = (-not $f[1]); Length = [long]('0' + $f[1]) }
         })
     } else {
         $entries = @(Get-ChildItem -LiteralPath $top -Recurse -Force -ErrorAction SilentlyContinue)
@@ -1512,13 +1522,12 @@ function global:br {
 function global:Get-PSProfileHistory {
     $file = (Get-PSReadLineOption).HistorySavePath
     if (-not (Test-Path -LiteralPath $file)) { return }
-    $cmds = @()
     $cur = ''
-    foreach ($l in (Get-Content -LiteralPath $file -Encoding UTF8)) {
+    $cmds = @(foreach ($l in (Get-Content -LiteralPath $file -Encoding UTF8 -ReadCount 0)) {
         if ($l -match '`$') { $cur += $l.Substring(0, $l.Length - 1) + "`n"; continue }
-        $cmds += $cur + $l
+        $cur + $l
         $cur = ''
-    }
+    })
     $seen = @{}
     for ($i = $cmds.Count - 1; $i -ge 0; $i--) {
         $c = $cmds[$i]
