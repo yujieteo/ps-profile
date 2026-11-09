@@ -7,7 +7,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+## [1.4.0] - 2026-11-09
+
+### Added in 1.4.0
 
 - `sd` replaces text in files. It shows a preview until you add `-Apply`, and it keeps the encoding and the line endings of each file.
 - `sd-undo` restores the files that the last `sd -Apply` changed.
