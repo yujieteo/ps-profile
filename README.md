@@ -114,7 +114,7 @@ When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpack
 
 ## ConstrainedLanguage limits
 
-The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. Because of these limits:
+The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. In FullLanguage mode only, it lists folders and reads files with .NET, which is faster. Run `doctor` to see which mode applies. Because of these limits:
 
 - The commands are PowerShell code. They do not call external programs such as `rg.exe` or `fzf.exe`.
 - `ep` starts `notepad.exe`.

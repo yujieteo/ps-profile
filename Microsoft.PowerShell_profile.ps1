@@ -6,6 +6,8 @@ if (-not (Test-Path -LiteralPath $global:PSProfileDataDir)) {
     New-Item -ItemType Directory -Path $global:PSProfileDataDir -Force | Out-Null
 }
 if (-not $global:PSProfileIndexCache) { $global:PSProfileIndexCache = @{} }
+$global:PSProfileFull = "$($ExecutionContext.SessionState.LanguageMode)" -eq 'FullLanguage'
+$global:PSProfileRootedRx = '^(?:[A-Za-z]:[\\/]|\\\\)'
 $global:PSProfileSdUndoDir = Join-Path $global:PSProfileDataDir 'sd-undo'
 $global:PSProfileRootsFile = Join-Path $global:PSProfileDataDir 'share-roots.txt'
 if (Test-Path -LiteralPath $global:PSProfileRootsFile) {
@@ -87,9 +89,38 @@ function global:Get-PSProfileItemPath($Item) {
     "$Item"
 }
 
+function global:Read-PSProfileEncodedFast([string]$Path) {
+    $b = [byte[]]::new(1024)
+    $fs = [System.IO.File]::OpenRead($Path)
+    try { $n = $fs.Read($b, 0, 1024) } finally { $fs.Dispose() }
+    $enc = 'UTF8'
+    $bom = $false
+    $e = [System.Text.Encoding]::UTF8
+    if ($n -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { $enc = 'Unicode'; $bom = $true; $e = [System.Text.Encoding]::Unicode }
+    elseif ($n -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { $enc = 'BigEndianUnicode'; $bom = $true; $e = [System.Text.Encoding]::BigEndianUnicode }
+    elseif ($n -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $bom = $true }
+    if ($enc -eq 'UTF8' -and $n -gt 0 -and [array]::IndexOf($b, [byte]0, 0, $n) -ge 0) { return @{ Text = $null; Enc = $enc; Bom = $bom } }
+    $text = [System.IO.File]::ReadAllText($Path, $e)
+    if ($enc -eq 'UTF8' -and $text.IndexOf([char]0xFFFD) -ge 0) {
+        if ($PSVersionTable.PSVersion.Major -lt 6) { $e = [System.Text.Encoding]::Default } else { $e = [System.Text.Encoding]::GetEncoding(1252) }
+        $text = [System.IO.File]::ReadAllText($Path, $e)
+        $enc = $global:PSProfileAnsi
+        $bom = $false
+    }
+    if ($text.IndexOf([char]0) -ge 0) { $text = $null }
+    @{ Text = $text; Enc = $enc; Bom = $bom }
+}
+
 function global:Read-PSProfileEncoded {
     [OutputType([hashtable])]
     param([string]$Path)
+    if ($global:PSProfileFull) {
+        $full = $Path
+        if ($full -notmatch $global:PSProfileRootedRx) { $full = Get-PSProfileFullPath $full }
+        $fast = $null
+        try { $fast = Read-PSProfileEncodedFast $full } catch { $fast = $null }
+        if ($fast) { return $fast }
+    }
     $byteArgs = $global:PSProfileByteArgs
     $b = Get-Content -LiteralPath $Path -TotalCount 1024 -ReadCount 0 @byteArgs -ErrorAction SilentlyContinue
     if ($null -eq $b) { $b = @() } elseif ($b -isnot [array]) { $b = @($b) }
@@ -508,25 +539,30 @@ function global:Get-PSProfileTree {
     $head = 0
     $tail = 0
     $queue[$tail++] = @{ Dir = $Root; Rules = $repo.Rules }
+    $fast = $global:PSProfileFull -and $Root -match $global:PSProfileRootedRx
     while ($head -lt $tail) {
         $entry = $queue[$head]
         $queue.Remove($head)
         $head++
-        $kids = @(Get-ChildItem -LiteralPath $entry.Dir -Force -ErrorAction SilentlyContinue)
+        $kids = $null
+        if ($fast) { try { $kids = ([System.IO.DirectoryInfo]$entry.Dir).GetFileSystemInfos() } catch { $kids = $null } }
+        if ($null -eq $kids) { $kids = @(Get-ChildItem -LiteralPath $entry.Dir -Force -ErrorAction SilentlyContinue) }
         $rules = @($entry.Rules)
         if ($repo.InRepo) {
             foreach ($k in $kids) {
-                if ($k.Name -eq '.gitignore' -and -not $k.PSIsContainer) { $rules += @(Get-PSProfileIgnoreFile $k.FullName $entry.Dir) }
+                if ($k.Name -eq '.gitignore' -and -not ([int]$k.Attributes -band 16)) { $rules += @(Get-PSProfileIgnoreFile $k.FullName $entry.Dir) }
             }
         }
         foreach ($k in $kids) {
-            if ($SkipHidden -and ($k.Name.StartsWith('.') -or ([int]$k.Attributes -band 2))) { continue }
+            $attr = [int]$k.Attributes
+            if ($SkipHidden -and ($k.Name.StartsWith('.') -or ($attr -band 2))) { continue }
+            $isDir = [bool]($attr -band 16)
             if ($repo.InRepo) {
                 if ($k.Name -eq '.git') { continue }
-                if ($rules.Count -and (Test-PSProfileIgnored $k.FullName ([bool]$k.PSIsContainer) $rules)) { continue }
+                if ($rules.Count -and (Test-PSProfileIgnored $k.FullName $isDir $rules)) { continue }
             }
             $k
-            if ($k.PSIsContainer -and -not ([int]$k.Attributes -band 1024)) { $queue[$tail++] = @{ Dir = $k.FullName; Rules = $rules } }
+            if ($isDir -and -not ($attr -band 1024)) { $queue[$tail++] = @{ Dir = $k.FullName; Rules = $rules } }
         }
     }
 }
@@ -573,7 +609,7 @@ function global:Find-PSProfileFile {
         $take = [int]::MaxValue
         if ($Limit -gt 0) { $take = $Limit }
         $scan = @(if ($UseIgnore) {
-            Get-PSProfileTree $typed -SkipHidden:$SkipHidden -UseIgnore | Where-Object { -not ($onlyFiles -and $_.PSIsContainer) -and -not ($onlyDirs -and -not $_.PSIsContainer) } | Select-Object -First $take
+            Get-PSProfileTree $typed -SkipHidden:$SkipHidden -UseIgnore | Where-Object { $isDir = [int]$_.Attributes -band 16; -not ($onlyFiles -and $isDir) -and -not ($onlyDirs -and -not $isDir) } | Select-Object -First $take
         } else {
             Get-ChildItem -LiteralPath $typed -Recurse -Force:(-not $SkipHidden) -File:$onlyFiles -Directory:$onlyDirs -ErrorAction SilentlyContinue | Select-Object -First $take
         })
@@ -588,7 +624,7 @@ function global:Find-PSProfileFile {
             if ($min -ge 0 -and $i.Length -lt $min) { continue }
             if ($max -ge 0 -and $i.Length -gt $max) { continue }
             if (-not $Meta) { $i.FullName }
-            elseif ($i.PSIsContainer) { "`t`t" + $i.FullName }
+            elseif ([int]$i.Attributes -band 16) { "`t`t" + $i.FullName }
             else { '{0}{1}{2}{1}{3}' -f $i.LastWriteTimeUtc.Ticks, "`t", $i.Length, $i.FullName }
         }
         return
@@ -811,7 +847,7 @@ function global:rg {
             if ($NoIgnore) {
                 Get-ChildItem -LiteralPath $full -Recurse -File -Force:$Hidden -ErrorAction SilentlyContinue | ForEach-Object { & $search $_ }
             } else {
-                Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore | Where-Object { -not $_.PSIsContainer } | ForEach-Object { & $search $_ }
+                Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $search $_ }
             }
         }
         $piped = @{}
@@ -1787,7 +1823,7 @@ function global:sd {
             if (-not $item) { Write-Error "sd: '$p' not found."; return }
             if (-not $item.PSIsContainer) { & $edit $item; return }
             if (Test-PSProfileWholeShare $full) { Write-Error "sd: refusing to change a whole share at '$full'. Give a folder or pipe fd results."; return }
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not $_.PSIsContainer } | ForEach-Object { & $edit $_ }
+            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $edit $_ }
         }
     }
     process {
@@ -1851,7 +1887,7 @@ function global:rnm {
             } else {
                 Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue | Where-Object { $Hidden -or -not ($_.Name.StartsWith('.') -or ([int]$_.Attributes -band 2)) }
             })
-            foreach ($k in $kids) { if ($Folders -or -not $k.PSIsContainer) { & $add $k } }
+            foreach ($k in $kids) { if ($Folders -or -not ([int]$k.Attributes -band 16)) { & $add $k } }
         }
     }
     process {
@@ -1870,7 +1906,7 @@ function global:rnm {
             if ($name -ceq $i.Name) { continue }
             $dir = $i.FullName.Substring(0, $i.FullName.Length - $i.Name.Length).TrimEnd('\', '/')
             if (-not $dir) { $dir = $i.FullName.Substring(0, 1) }
-            @{ Old = $i.FullName; Dir = $dir; OldName = $i.Name; NewName = $name; New = (Join-Path $dir $name); IsDir = [bool]$i.PSIsContainer; Chain = $false; Tmp = '' }
+            @{ Old = $i.FullName; Dir = $dir; OldName = $i.Name; NewName = $name; New = (Join-Path $dir $name); IsDir = [bool]([int]$i.Attributes -band 16); Chain = $false; Tmp = '' }
         })
         if (-not $plan.Count) { Write-Host 'rnm: no names to change.' -ForegroundColor DarkGray; return }
         $plan = @($plan | Sort-Object @{ Expression = { @($_.Old -split '[\\/]').Count }; Descending = $true }, @{ Expression = { $_.Old } })
@@ -2040,6 +2076,8 @@ function global:doctor {
         New-PSProfileCheck 'Profile version' 'INFO' $global:PSProfileVersion
         New-PSProfileCheck 'PowerShell version' 'INFO' "$($PSVersionTable.PSVersion)"
         New-PSProfileCheck 'Language mode' 'INFO' "$($ExecutionContext.SessionState.LanguageMode)"
+        if ($global:PSProfileFull) { New-PSProfileCheck 'Fast file access' 'INFO' 'On. FullLanguage mode lets the profile use .NET to list folders and read files.' }
+        else { New-PSProfileCheck 'Fast file access' 'INFO' 'Off. This language mode permits cmdlets only.' }
         New-PSProfileCheck 'Execution policy' 'INFO' "$(Get-ExecutionPolicy)"
         foreach ($d in @(@('Data folder', $global:PSProfileDataDir), @('Temp folder', $env:TEMP))) {
             if (Test-PSProfileWritable $d[1]) { New-PSProfileCheck $d[0] 'OK' $d[1] }
