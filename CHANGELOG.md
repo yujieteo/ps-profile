@@ -7,7 +7,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed in Unreleased
+## [1.5.0] - 2026-11-10
+
+### Changed in 1.5.0
 
 - In FullLanguage mode, `fd`, `rg`, `sd` and `rnm -r` list folders with .NET, and all commands read text files with .NET. This is faster than the cmdlets. If a .NET call fails, the profile uses the cmdlets.
 - In FullLanguage mode, `fd` shows the items of a folder in name order. Before, folders came first.

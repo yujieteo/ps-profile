@@ -1,4 +1,4 @@
-$global:PSProfileVersion = '1.4.1'
+$global:PSProfileVersion = '1.5.0'
 $global:ShareRoots = @()
 
 $global:PSProfileDataDir = Join-Path $env:LOCALAPPDATA 'ps-profile'

@@ -70,7 +70,7 @@ In a Git repository, the prompt shows the branch after the folder. The prompt re
 
 1. Open Windows PowerShell and run `$PROFILE`. The output is the path of the profile file.
 2. If the file does not exist, create it at that path.
-3. Download [`Microsoft.PowerShell_profile.ps1` version 1.4.1](https://github.com/yujieteo/ps-profile/releases/download/v1.4.1/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
+3. Download [`Microsoft.PowerShell_profile.ps1` version 1.5.0](https://github.com/yujieteo/ps-profile/releases/download/v1.5.0/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
 4. Open a new Windows PowerShell window.
 5. Run `$PSProfileVersion` to see the installed version.
 
@@ -131,15 +131,15 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. In Ful
 
 ## Release
 
-The current version is 1.4.1. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 1.5.0. See [CHANGELOG.md](CHANGELOG.md).
 
 Before the merge, change the version in [Install](#install) and in this section.
 
 After the change merges to the default branch:
 
-1. Run `git tag v1.4.1` on the merged commit.
-2. Run `git push origin v1.4.1`.
-3. Create a GitHub release for the tag `v1.4.1`.
+1. Run `git tag v1.5.0` on the merged commit.
+2. Run `git push origin v1.5.0`.
+3. Create a GitHub release for the tag `v1.5.0`.
 4. Attach `Microsoft.PowerShell_profile.ps1` to the release.
 
 ## License
