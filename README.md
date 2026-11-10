@@ -15,8 +15,8 @@ The profile adds these commands:
 | Command | Purpose |
 |---|---|
 | `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. In a Git repository, files that `.gitignore` ignores show only with `-I`. Uses the file index for folders under `ShareRoots`. |
-| `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. |
-| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` or `-u` to include them. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
+| `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
@@ -26,14 +26,14 @@ The profile adds these commands:
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
 | `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
 | `delta` | Show the differences between two files. Use `-s` for side by side. The command compares Office files as text. |
-| `sd` | Replace text in files, line by line. It shows a preview and changes no file until you add `-Apply`. It keeps the encoding and the line endings of each file. It skips dot files and the files that `.gitignore` ignores. Use `-Hidden` or `-u` to include them. Other options are `-F`, `-w`, `-i`, `-s` and `-g`. `sd-undo` restores the files that the last `-Apply` changed. |
+| `sd` | Replace text in files, line by line. It shows a preview and changes no file until you add `-Apply`. It keeps the encoding and the line endings of each file. It skips hidden files, dot files and the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Other options are `-F`, `-w`, `-i`, `-s` and `-g`. `sd-undo` restores the files that the last `-Apply` changed. |
 | `rnm` | Rename files by regex. It shows a preview and changes no name until you add `-Apply`. Use `-r` for subfolders and `-Folders` to rename folders too. A name conflict stops the whole run. If a rename fails, the command undoes the renames that it made. |
 | `doctor` | Check the language mode, the data folders, the commands that the profile needs, the share roots and the index. |
 | `canrun` | Show if AppLocker allows a program for you. It reads AppLocker rules from Group Policy only. It does not see AppLocker rules from MDM or WDAC policies. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
 | `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. `wc` takes `-l`, `-w` and `-c`. `tail -f` shows new lines as they arrive. |
-| `mkcd`, `up`, `..`, `...` | Create and enter a folder, or go to a parent folder. |
+| `mkcd`, `up`, `..`, `...` | Create and enter a folder, or go to a parent folder. They record the visit for `z`. |
 | `open` | Open a file with its default program. |
 | `ep`, `reload` | Open the profile in Notepad. Load the profile again. |
 
@@ -52,7 +52,9 @@ The preview needs a window width of 60 characters or more. The preview does not 
 | Key | Purpose |
 |---|---|
 | Ctrl+R | Pick a command from the full PSReadLine history. The command goes to the clipboard. |
-| Ctrl+T | Pick a file under the current folder. The path goes to the clipboard. |
+| Ctrl+T | Pick a file under the current folder. The path goes to the clipboard. The list does not show hidden files, dot files and ignored files. |
+| Up, Down | Search the history for commands that start with the text on the command line. |
+| Tab | Show the completions as a menu. |
 
 After the pick, press Ctrl+V to insert the text on the command line. ConstrainedLanguage mode blocks the PSReadLine methods that put text on the command line. Thus the keys use the clipboard.
 
@@ -62,7 +64,7 @@ Press Tab after `z` or `zi` to complete a folder from the history. Press Tab aft
 
 ## Prompt
 
-The prompt shows the current folder. It also shows the time of commands that take more than 2 seconds.
+The prompt shows the current folder. For a path of more than 3 parts, it shows `..` and the last 2 parts. It also shows the time of commands that take more than 2 seconds, and a red `x` after a command that fails.
 
 In a Git repository, the prompt shows the branch after the folder. The prompt reads `.git/HEAD` and does not need `git.exe`. To keep the prompt fast, it does not show the branch on network paths.
 
@@ -70,7 +72,7 @@ In a Git repository, the prompt shows the branch after the folder. The prompt re
 
 1. Open Windows PowerShell and run `$PROFILE`. The output is the path of the profile file.
 2. If the file does not exist, create it at that path.
-3. Download [`Microsoft.PowerShell_profile.ps1` version 1.5.0](https://github.com/yujieteo/ps-profile/releases/download/v1.5.0/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
+3. Download [`Microsoft.PowerShell_profile.ps1` version 1.6.0](https://github.com/yujieteo/ps-profile/releases/download/v1.6.0/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
 4. Open a new Windows PowerShell window.
 5. Run `$PSProfileVersion` to see the installed version.
 
@@ -95,7 +97,10 @@ An upgrade replaces the profile file, and this setting with it. To keep your sha
 - The index does not keep the Windows hidden attribute. Under `ShareRoots`, `fd` without `-H` hides only names that start with a dot.
 - The index keeps the size and the change time of each file. Thus `fd -Changed`, `fd -Size` and `recent` are fast on share roots.
 - The index builder lists a folder again only when the time of the folder changes. If a program changes a file but not its folder, the index keeps the old size and time of that file.
-- Version 1.1.0 uses a new index format. After the upgrade, the profile builds the index of each share root again one time. The profile does not read an index of version 1.0.0, and it deletes the old files.
+
+## Session settings
+
+The profile sets the default encoding of `Out-File`, `Set-Content`, `Add-Content` and `Export-Csv` to UTF-8 for the session. In Windows PowerShell 5.1, these files start with a byte order mark. The `>` operator uses the `Out-File` setting.
 
 ## Where the profile writes data
 
@@ -131,15 +136,15 @@ The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. In Ful
 
 ## Release
 
-The current version is 1.5.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 1.6.0. See [CHANGELOG.md](CHANGELOG.md).
 
-Before the merge, change the version in [Install](#install) and in this section.
+Before the merge, change the version in line 1 of the profile, in [CHANGELOG.md](CHANGELOG.md), in [Install](#install) and in this section.
 
 After the change merges to the default branch:
 
-1. Run `git tag v1.5.0` on the merged commit.
-2. Run `git push origin v1.5.0`.
-3. Create a GitHub release for the tag `v1.5.0`.
+1. Run `git tag v1.6.0` on the merged commit.
+2. Run `git push origin v1.6.0`.
+3. Create a GitHub release for the tag `v1.6.0`.
 4. Attach `Microsoft.PowerShell_profile.ps1` to the release.
 
 ## License

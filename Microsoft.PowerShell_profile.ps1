@@ -1,11 +1,15 @@
-$global:PSProfileVersion = '1.5.0'
+$global:PSProfileVersion = '1.6.0'
 $global:ShareRoots = @()
 
 $global:PSProfileDataDir = Join-Path $env:LOCALAPPDATA 'ps-profile'
 if (-not (Test-Path -LiteralPath $global:PSProfileDataDir)) {
     New-Item -ItemType Directory -Path $global:PSProfileDataDir -Force | Out-Null
 }
-if (-not $global:PSProfileIndexCache) { $global:PSProfileIndexCache = @{} }
+if (-not (Test-Path -LiteralPath Variable:global:PSProfileIndexCache)) { $global:PSProfileIndexCache = @{} }
+foreach ($name in 'PSProfileLastId', 'PSProfileLastPwd', 'PSProfileOldPwd', 'PSProfileGitDir') {
+    if (-not (Test-Path -LiteralPath "Variable:global:$name")) { Set-Variable -Name $name -Scope Global -Value $null }
+}
+Remove-Variable name
 $global:PSProfileFull = "$($ExecutionContext.SessionState.LanguageMode)" -eq 'FullLanguage'
 $global:PSProfileRootedRx = '^(?:[A-Za-z]:[\\/]|\\\\)'
 $global:PSProfileSdUndoDir = Join-Path $global:PSProfileDataDir 'sd-undo'
@@ -308,8 +312,7 @@ $global:PSProfileIndexBuilder = {
             if (-not $root) { continue }
             $sep = '\'
             if ($root.StartsWith('/')) { $sep = '/' }
-            $name = $root -replace '[^A-Za-z0-9]+', '_'
-            $base = Join-Path $DataDir ('idx2_' + $name)
+            $base = Join-Path $DataDir ('idx2_' + ($root -replace '[^A-Za-z0-9]+', '_'))
             if ($MaxAgeHours -gt 0) {
                 $i = Get-Item -LiteralPath "$base.idx" -ErrorAction SilentlyContinue
                 if ($i -and -not (Test-Path -LiteralPath "$base.partial") -and $i.LastWriteTime -gt (Get-Date).AddHours(-$MaxAgeHours)) { continue }
@@ -406,8 +409,6 @@ $global:PSProfileIndexBuilder = {
 
             & $save $new $null
             Remove-Item -LiteralPath "$base.partial" -Force -ErrorAction SilentlyContinue
-            $oldBase = Join-Path $DataDir ('idx_' + $name)
-            Remove-Item -LiteralPath "$oldBase.idx", "$oldBase.state" -Force -ErrorAction SilentlyContinue
         }
     } finally {
         Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
@@ -705,7 +706,7 @@ function global:recent {
         [int]$Count = 20
     )
     $toHost = Test-PSProfileToHost $MyInvocation
-    $lines = @(Find-PSProfileFile -Path $Path -Changed "${Days}d" -Meta | Sort-Object -Descending | Select-Object -First $Count)
+    $lines = @(Find-PSProfileFile -Path $Path -Changed "${Days}d" -SkipHidden -UseIgnore -Meta | Sort-Object -Descending | Select-Object -First $Count)
     foreach ($l in $lines) {
         $f = $l.Split("`t")
         if (-not $toHost) { $f[2]; continue }
@@ -769,6 +770,18 @@ function global:rg {
         if ($After -ge 0) { $post = $After }
         $skipped = @{ Legacy = 0; Large = 0 }
         $seen = 0
+        $window = {
+            param($Found, [int]$Total)
+            $hit = @{}
+            foreach ($m in $Found) { $hit[$m.LineNumber - 1] = $m.Matches }
+            $show = @{}
+            foreach ($n in $hit.Keys) {
+                for ($j = $n - $pre; $j -le $n + $post; $j++) {
+                    if ($j -ge 0 -and $j -lt $Total) { $show[$j] = $true }
+                }
+            }
+            @{ Hit = $hit; Show = $show }
+        }
         $search = {
             param($file)
             if ($Glob) {
@@ -787,8 +800,8 @@ function global:rg {
                 $lines = Split-PSProfileLines $text
             }
             if (-not $InvertMatch) {
-                if ($ignore) { $any = $lines -match $rx } else { $any = $lines -cmatch $rx }
-                if (-not $any) { return }
+                if ($ignore) { $any = @($lines) -match $rx } else { $any = @($lines) -cmatch $rx }
+                if (-not @($any).Count) { return }
             }
             $ms = @($lines | Select-String @selectArgs)
             if (-not $ms.Count) { return }
@@ -811,14 +824,9 @@ function global:rg {
                 return
             }
             Write-Host $file.FullName -ForegroundColor Magenta
-            $hit = @{}
-            foreach ($m in $ms) { $hit[$m.LineNumber - 1] = $m.Matches }
-            $show = @{}
-            foreach ($n in $hit.Keys) {
-                for ($j = $n - $pre; $j -le $n + $post; $j++) {
-                    if ($j -ge 0 -and $j -lt $lines.Count) { $show[$j] = $true }
-                }
-            }
+            $w = & $window $ms $lines.Count
+            $hit = $w.Hit
+            $show = $w.Show
             $last = -2
             foreach ($j in ($show.Keys | Sort-Object)) {
                 if (($pre -or $post) -and $last -ge 0 -and $j -gt $last + 1) { Write-Host '--' -ForegroundColor DarkGray }
@@ -838,17 +846,11 @@ function global:rg {
             $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
             if (-not $item) { Write-Error "rg: '$p' not found."; return }
             if (-not $item.PSIsContainer) { & $search $item; return }
-            $unc = ConvertTo-PSProfileUnc $full
-            $root = Find-PSProfileRoot $unc
-            if ($unc -match '^\\\\[^\\]+\\[^\\]+\\?$' -or ($root -and $unc.TrimEnd('\', '/') -eq $root.Unc)) {
+            if (Test-PSProfileWholeShare $full) {
                 Write-Error "rg: refusing a whole-share content search of '$full'. Give a folder or pipe fd results."
                 return
             }
-            if ($NoIgnore) {
-                Get-ChildItem -LiteralPath $full -Recurse -File -Force:$Hidden -ErrorAction SilentlyContinue | ForEach-Object { & $search $_ }
-            } else {
-                Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $search $_ }
-            }
+            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $search $_ }
         }
         $piped = @{}
         $searchText = {
@@ -856,14 +858,9 @@ function global:rg {
             $ms = @($lines | Select-String @selectArgs)
             if (-not $ms.Count) { return }
             if ($FilesWithMatches) { '(standard input)'; return }
-            $hit = @{}
-            foreach ($m in $ms) { $hit[$m.LineNumber - 1] = $m.Matches }
-            $show = @{}
-            foreach ($n in $hit.Keys) {
-                for ($j = $n - $pre; $j -le $n + $post; $j++) {
-                    if ($j -ge 0 -and $j -lt $lines.Count) { $show[$j] = $true }
-                }
-            }
+            $w = & $window $ms $lines.Count
+            $hit = $w.Hit
+            $show = $w.Show
             $last = -2
             foreach ($j in ($show.Keys | Sort-Object)) {
                 if (($pre -or $post) -and $last -ge 0 -and $j -gt $last + 1) {
@@ -1607,6 +1604,11 @@ function global:Get-PSProfileReplacer {
 }
 
 function global:Read-PSProfileBytes([string]$Path) {
+    if ($global:PSProfileFull -and $Path -match $global:PSProfileRootedRx) {
+        $fast = $null
+        try { $fast = [System.IO.File]::ReadAllBytes($Path) } catch { $fast = $null }
+        if ($null -ne $fast) { return , $fast }
+    }
     $byteArgs = $global:PSProfileByteArgs
     $bytes = Get-Content -LiteralPath $Path -ReadCount 0 @byteArgs -ErrorAction Stop
     if ($null -eq $bytes) { return , @() }
@@ -1614,8 +1616,11 @@ function global:Read-PSProfileBytes([string]$Path) {
     , $bytes
 }
 
-function global:Test-PSProfileSameBytes([object[]]$A, [object[]]$B) {
+function global:Test-PSProfileSameBytes($A, $B) {
     if ($A.Count -ne $B.Count) { return $false }
+    if ($global:PSProfileFull) {
+        try { return [System.Convert]::ToBase64String([byte[]]$A) -ceq [System.Convert]::ToBase64String([byte[]]$B) } catch { }
+    }
     ($A -join ',') -ceq ($B -join ',')
 }
 
@@ -1634,7 +1639,10 @@ function global:Write-PSProfileEncoded {
 }
 
 function global:Write-PSProfileBytes {
-    param([string]$Path, [object[]]$Bytes)
+    param([string]$Path, $Bytes)
+    if ($global:PSProfileFull -and $Path -match $global:PSProfileRootedRx) {
+        try { [System.IO.File]::WriteAllBytes($Path, [byte[]]$Bytes); return } catch { }
+    }
     $byteArgs = $global:PSProfileByteArgs
     if ($Bytes.Count) { Set-Content -LiteralPath $Path -Value $Bytes @byteArgs -Force -WarningAction SilentlyContinue -ErrorAction Stop }
     else { Clear-Content -LiteralPath $Path -Force -ErrorAction Stop }
@@ -1790,8 +1798,8 @@ function global:sd {
             $text = $source.Text
             if (-not $text) { return }
             $parts = $text -split '(\r\n|\n|\r)'
-            if ($r.Case) { $any = $parts -cmatch $r.Rx } else { $any = $parts -match $r.Rx }
-            if (-not $any) { return }
+            if ($r.Case) { $any = @($parts) -cmatch $r.Rx } else { $any = @($parts) -match $r.Rx }
+            if (-not @($any).Count) { return }
             $lines = 0
             for ($j = 0; $j -lt $parts.Count; $j += 2) {
                 $old = $parts[$j]
@@ -2107,6 +2115,7 @@ function global:doctor {
             else { New-PSProfileCheck 'Share root' 'FAIL' "Cannot reach '$($root.Unc)'." }
             $idx = Get-Item -LiteralPath "$($root.Base).idx" -ErrorAction SilentlyContinue
             if (-not $idx) { New-PSProfileCheck 'Index' 'WARN' "No index for '$($root.Unc)'. Run Update-Index."; continue }
+            if (Test-Path -LiteralPath "$($root.Base).partial") { New-PSProfileCheck 'Index' 'WARN' "The build for '$($root.Unc)' did not end. Run Update-Index."; continue }
             $hours = ((Get-Date) - $idx.LastWriteTime).TotalHours
             if ($hours -gt 24) { New-PSProfileCheck 'Index' 'WARN' ("'{0}' is {1:0} hours old. Run Update-Index." -f $root.Unc, $hours) }
             else { New-PSProfileCheck 'Index' 'OK' ("'{0}' is {1:0} hours old." -f $root.Unc, $hours) }
@@ -2146,11 +2155,10 @@ $global:PSProfileTldr = [ordered]@{
                      'rg -u token  # Also search files that .gitignore ignores',
                      'rg -Hidden token  # Also search hidden files and dot files',
                      'rg -A 2 -B 1 error log.txt  # 2 lines after and 1 before each match',
-                     'ipconfig | rg -n IPv4  # Add line numbers to piped text',
+                     'ipconfig | rg -n IPv4  # Filter piped text. -n adds line numbers',
                      'rg budget -Office  # Also search .docx, .xlsx and .pptx files',
                      'rg error -C 2  # Show 2 lines before and after each match',
-                     'fd -Ext csv | rg total  # Search only the files that fd finds',
-                     'ipconfig | rg IPv4  # Filter piped text'
+                     'fd -Ext csv | rg total  # Search only the files that fd finds'
     'grep'         = 'Alias of rg.',
                      'grep -i error log.txt  # Same as rg -i error log.txt'
     'rgi'          = 'Content search in the picker. A pick opens the file.',
@@ -2228,7 +2236,7 @@ $global:PSProfileTldr = [ordered]@{
                      "fd -e csv | sd 'old' 'new' -Apply  # Only the files that fd finds"
     'sd-undo'      = 'Restore the files that the last sd -Apply changed.',
                      'sd-undo  # Skips a file that changed after sd ran'
-    'rnm'        = 'Rename files by regex. Shows a preview until you add -Apply.',
+    'rnm'          = 'Rename files by regex. Shows a preview until you add -Apply.',
                      "rnm 'draft' 'final'  # Preview for the current folder",
                      "rnm 'draft' 'final' -Apply  # Rename the files",
                      "rnm '^(\d+)-' 'item-`$1-' -r  # Also in subfolders",
@@ -2298,7 +2306,7 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     }
     Set-PSReadLineKeyHandler -Chord Ctrl+t -BriefDescription PickFile -Description 'Pick a file under the current folder and copy its path' -ScriptBlock {
         Write-Host ''
-        $pick = @(Find-PSProfileFile -Meta -Limit 20000) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
+        $pick = @(Find-PSProfileFile -SkipHidden -UseIgnore -Meta -Limit 20000) -notlike "`t*" | ForEach-Object { $_.Split("`t")[2] } | fzf
         if ($pick) { Copy-PSProfilePick (ConvertTo-PSProfileQuoted $pick) }
     }
 }
@@ -2313,12 +2321,20 @@ Register-ArgumentCompleter -CommandName tldr -ParameterName Name -ScriptBlock {
     $global:PSProfileTldr.Keys | Where-Object { $_ -like "$wordToComplete*" }
 }
 
-function global:.. { Set-Location .. }
-function global:... { Set-Location ../.. }
-function global:up([int]$N = 1) { Set-Location ((@('..') * $N) -join '/') }
+function global:Set-PSProfileLocation([string]$Path) {
+    try { Set-Location -LiteralPath $Path -ErrorAction Stop } catch { Write-Error $_; return }
+    $loc = Get-Location
+    if ($loc.Provider.Name -eq 'FileSystem') { Add-PSProfileZ $loc.ProviderPath }
+}
+function global:.. { Set-PSProfileLocation '..' }
+function global:... { Set-PSProfileLocation '../..' }
+function global:up([int]$N = 1) {
+    if ($N -lt 1) { return }
+    Set-PSProfileLocation ((@('..') * $N) -join '/')
+}
 function global:mkcd([string]$Path) {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
-    Set-Location -LiteralPath $Path
+    Set-PSProfileLocation $Path
 }
 
 function global:which([string]$Name) {

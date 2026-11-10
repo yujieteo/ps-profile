@@ -7,6 +7,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-10
+
+### Changed in 1.6.0
+
+- `recent` and Ctrl+T skip hidden files, dot files and the files that `.gitignore` ignores, as `fd` does.
+- `rg -u` includes only the files that `.gitignore` ignores. Use `-Hidden` for hidden files and dot files. Before, `-u` also searched dot files.
+- `..`, `...`, `up` and `mkcd` record the visit for `z`.
+- In FullLanguage mode, `sd -Apply` and `sd-undo` read, write and compare file bytes with .NET. This is faster for large files. If a .NET call fails, the profile uses the cmdlets.
+- `doctor` gives a warning for an index whose build did not end.
+- `tldr rg` shows the piped text example one time.
+
+### Fixed in 1.6.0
+
+- `rg` and `sd` find a match when the only line that matches is an empty line, for example with the pattern `^$`. Before, they skipped the file.
+- The prompt and `cd -` work in strict mode. The profile sets their variables at load.
+- `up 0` does nothing. Before, it gave an error.
+
+### Removed in 1.6.0
+
+- The index build no longer deletes the `idx_*` files of version 1.0.0.
+
 ## [1.5.0] - 2026-11-10
 
 ### Changed in 1.5.0
@@ -75,7 +96,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `du` under `$ShareRoots` reads the sizes from the index, not from a scan of the network.
 - Ctrl+T outside `$ShareRoots` stops the scan after 20000 items and shows a warning.
 
-### Fixed
+### Fixed in 1.2.0
 
 - The index build keeps the old index when a root is not reachable. It keeps the old lines of a folder that it cannot read.
 - The index build saves its progress every 2 minutes. A closed window no longer loses the work. The index is `old` until a build ends.
