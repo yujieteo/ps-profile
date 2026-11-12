@@ -7,6 +7,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-12
+
+### Added in 2.0.0
+
+- `tests.ps1` tests the profile in ConstrainedLanguage mode. It compares `fd`, `rg` and `sd` with `git check-ignore` and the real `rg`, `fd` and `sd` when they are on the computer.
+
+### Changed in 2.0.0
+
+- `rg -g` and `sd -g` use the rules of `.gitignore` patterns. A glob can match a path, for example `-g src/**`, and `-g !*.log` excludes files. Before, a glob matched the file name only.
+- In a repository inside a repository, only the rules of the inner repository apply, as in the real `rg` and `fd`. Before, the rules of the outer repository also applied.
+- `sd -Apply` saves the copy for `sd-undo` before it changes a file. It compares hashes and no longer reads each file as a list of bytes. This is faster for large files.
+- `sd-undo` compares the hash of each file with the hash that `sd` wrote. Before, it compared the size and the time, so it could replace a later change of the same size.
+- The profile calls methods only on the types that ConstrainedLanguage mode permits, in each language mode.
+
+### Fixed in 2.0.0
+
+- A `.gitignore` pattern with two asterisks that are not next to a slash, for example `x**y.txt`, does not match across folders.
+- A backslash in a `.gitignore` pattern makes the next character literal, for example `a\ b.txt` and `lit\[x].txt`.
+- A character class in a `.gitignore` pattern can start with a closing bracket, for example `[]x].txt`.
+- A `.gitignore` pattern that is not valid, for example `[z-a].txt`, gives one warning, and the profile does not use it. Before, each file gave an error.
+- `rg` gives one error for a pattern that is not valid. Before, it gave an exception.
+- `sd` with a pattern that matches an empty line, for example `^$`, does not add a line after the last line ending.
+
+### Removed in 2.0.0
+
+- `du`, `br`, `rgi` and `canrun`.
+- The .NET file access of FullLanguage mode. The profile uses the cmdlets in each language mode.
+
 ## [1.6.0] - 2026-11-10
 
 ### Changed in 1.6.0
