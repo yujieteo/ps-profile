@@ -1,4 +1,4 @@
-$global:PSProfileVersion = '1.6.0'
+$global:PSProfileVersion = '2.0.0'
 $global:ShareRoots = @()
 
 $global:PSProfileDataDir = Join-Path $env:LOCALAPPDATA 'ps-profile'
@@ -10,8 +10,6 @@ foreach ($name in 'PSProfileLastId', 'PSProfileLastPwd', 'PSProfileOldPwd', 'PSP
     if (-not (Test-Path -LiteralPath "Variable:global:$name")) { Set-Variable -Name $name -Scope Global -Value $null }
 }
 Remove-Variable name
-$global:PSProfileFull = "$($ExecutionContext.SessionState.LanguageMode)" -eq 'FullLanguage'
-$global:PSProfileRootedRx = '^(?:[A-Za-z]:[\\/]|\\\\)'
 $global:PSProfileSdUndoDir = Join-Path $global:PSProfileDataDir 'sd-undo'
 $global:PSProfileRootsFile = Join-Path $global:PSProfileDataDir 'share-roots.txt'
 if (Test-Path -LiteralPath $global:PSProfileRootsFile) {
@@ -93,38 +91,9 @@ function global:Get-PSProfileItemPath($Item) {
     "$Item"
 }
 
-function global:Read-PSProfileEncodedFast([string]$Path) {
-    $b = [byte[]]::new(1024)
-    $fs = [System.IO.File]::OpenRead($Path)
-    try { $n = $fs.Read($b, 0, 1024) } finally { $fs.Dispose() }
-    $enc = 'UTF8'
-    $bom = $false
-    $e = [System.Text.Encoding]::UTF8
-    if ($n -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { $enc = 'Unicode'; $bom = $true; $e = [System.Text.Encoding]::Unicode }
-    elseif ($n -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { $enc = 'BigEndianUnicode'; $bom = $true; $e = [System.Text.Encoding]::BigEndianUnicode }
-    elseif ($n -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $bom = $true }
-    if ($enc -eq 'UTF8' -and $n -gt 0 -and [array]::IndexOf($b, [byte]0, 0, $n) -ge 0) { return @{ Text = $null; Enc = $enc; Bom = $bom } }
-    $text = [System.IO.File]::ReadAllText($Path, $e)
-    if ($enc -eq 'UTF8' -and $text.IndexOf([char]0xFFFD) -ge 0) {
-        if ($PSVersionTable.PSVersion.Major -lt 6) { $e = [System.Text.Encoding]::Default } else { $e = [System.Text.Encoding]::GetEncoding(1252) }
-        $text = [System.IO.File]::ReadAllText($Path, $e)
-        $enc = $global:PSProfileAnsi
-        $bom = $false
-    }
-    if ($text.IndexOf([char]0) -ge 0) { $text = $null }
-    @{ Text = $text; Enc = $enc; Bom = $bom }
-}
-
 function global:Read-PSProfileEncoded {
     [OutputType([hashtable])]
     param([string]$Path)
-    if ($global:PSProfileFull) {
-        $full = $Path
-        if ($full -notmatch $global:PSProfileRootedRx) { $full = Get-PSProfileFullPath $full }
-        $fast = $null
-        try { $fast = Read-PSProfileEncodedFast $full } catch { $fast = $null }
-        if ($fast) { return $fast }
-    }
     $byteArgs = $global:PSProfileByteArgs
     $b = Get-Content -LiteralPath $Path -TotalCount 1024 -ReadCount 0 @byteArgs -ErrorAction SilentlyContinue
     if ($null -eq $b) { $b = @() } elseif ($b -isnot [array]) { $b = @($b) }
@@ -466,37 +435,76 @@ function global:Update-Index {
     & $global:PSProfileIndexBuilder ($roots -join "`n") $global:PSProfileDataDir $start 0 0
 }
 
-function global:ConvertTo-PSProfileIgnoreRule([string]$Line, [string]$Base) {
+function global:ConvertTo-PSProfileIgnoreRule([string]$Line, [string]$Base, [string]$File) {
     $t = $Line.TrimEnd()
     if (-not $t -or $t.StartsWith('#')) { return }
     $negate = $t.StartsWith('!')
     if ($negate) { $t = $t.Substring(1) }
-    $t = $t -replace '^\\(?=[#!])', ''
     $dirOnly = $t.EndsWith('/')
     $t = $t.TrimEnd('/')
     if (-not $t) { return }
     $anchored = $t.Contains('/')
     $t = $t.TrimStart('/')
-    $parts = foreach ($m in [regex]::Matches($t, '\*\*/|/\*\*$|\*\*|\*|\?|\[[^\]]*\]|\[|[^*?\[/]+|/')) {
+    $valid = $true
+    $skipSlash = $false
+    $parts = foreach ($m in [regex]::Matches($t, '\\.|\\$|\*+|\?|\[[!^]?\]?(?:\\.|[^\]\\])*\]|\[|/|[^\\*?\[/]+')) {
         $v = $m.Value
-        if ($v -eq '**/') { '(?:.*/)?' }
-        elseif ($v -eq '/**') { '/.*' }
-        elseif ($v -eq '**') { '.*' }
-        elseif ($v -eq '*') { '[^/]*' }
-        elseif ($v -eq '?') { '[^/]' }
-        elseif ($v.Length -gt 2 -and $v.StartsWith('[')) { $v -replace '^\[!', '[^' }
-        else { [regex]::Escape($v) }
+        if ($skipSlash) {
+            $skipSlash = $false
+            if ($v -eq '/') { continue }
+        }
+        if ($v.StartsWith('\')) {
+            if ($v.Length -eq 1) { $valid = $false } else { [regex]::Escape($v.Substring(1)) }
+        } elseif ($v.StartsWith('*')) {
+            $end = $m.Index + $v.Length
+            $open = $m.Index -eq 0 -or $t.Substring($m.Index - 1, 1) -eq '/'
+            if ($v.Length -eq 1 -or -not $open) { '[^/]*' }
+            elseif ($end -eq $t.Length) { '.*' }
+            elseif ($t.Substring($end, 1) -eq '/') { '(?:.*/)?'; $skipSlash = $true }
+            else { '[^/]*' }
+        } elseif ($v -eq '?') { '[^/]' }
+        elseif ($v.Length -gt 1 -and $v.StartsWith('[')) {
+            $body = $v.Substring(1, $v.Length - 2)
+            $not = ''
+            if ($body.StartsWith('!') -or $body.StartsWith('^')) { $not = '^/'; $body = $body.Substring(1) }
+            $set = foreach ($c in [regex]::Matches($body, '\\.|.')) {
+                $x = $c.Value
+                if ($x.Length -eq 2) {
+                    $x = $x.Substring(1)
+                    if ('\]^[-'.Contains($x)) { '\' + $x } else { $x }
+                } elseif ('\]^['.Contains($x)) { '\' + $x }
+                else { $x }
+            }
+            '[' + $not + (@($set) -join '') + ']'
+        } else { [regex]::Escape($v) }
     }
     $prefix = '(?i)(?:^|/)'
     if ($anchored) { $prefix = '(?i)^' }
-    @{ Base = $Base; Rx = $prefix + (@($parts) -join '') + '$'; Negate = [bool]$negate; DirOnly = [bool]$dirOnly }
+    $rx = $prefix + (@($parts) -join '') + '$'
+    if ($valid) { try { $null = '' -match $rx } catch { $valid = $false } }
+    if (-not $valid) {
+        $where = ''
+        if ($File) { $where = " in '$File'" }
+        Write-Warning "The pattern '$($Line.TrimEnd())'$where is not valid. The profile does not use it."
+        return
+    }
+    @{ Base = $Base; Rx = $rx; Negate = [bool]$negate; DirOnly = [bool]$dirOnly }
 }
 
 function global:Get-PSProfileIgnoreFile([string]$File, [string]$Base) {
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return }
     foreach ($line in @(Get-Content -LiteralPath $File -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-        ConvertTo-PSProfileIgnoreRule $line $Base
+        ConvertTo-PSProfileIgnoreRule $line $Base $File
     }
+}
+
+function global:Test-PSProfileGlob {
+    [OutputType([bool])]
+    param([string]$Rel, [object[]]$Rules)
+    $keep = $true
+    foreach ($r in $Rules) { if (-not $r.Negate) { $keep = $false; break } }
+    foreach ($r in $Rules) { if ($Rel -match $r.Rx) { $keep = -not $r.Negate } }
+    $keep
 }
 
 function global:Get-PSProfileRepoRules([string]$Root) {
@@ -540,19 +548,21 @@ function global:Get-PSProfileTree {
     $head = 0
     $tail = 0
     $queue[$tail++] = @{ Dir = $Root; Rules = $repo.Rules }
-    $fast = $global:PSProfileFull -and $Root -match $global:PSProfileRootedRx
     while ($head -lt $tail) {
         $entry = $queue[$head]
         $queue.Remove($head)
         $head++
-        $kids = $null
-        if ($fast) { try { $kids = ([System.IO.DirectoryInfo]$entry.Dir).GetFileSystemInfos() } catch { $kids = $null } }
-        if ($null -eq $kids) { $kids = @(Get-ChildItem -LiteralPath $entry.Dir -Force -ErrorAction SilentlyContinue) }
+        $kids = @(Get-ChildItem -LiteralPath $entry.Dir -Force -ErrorAction SilentlyContinue)
         $rules = @($entry.Rules)
         if ($repo.InRepo) {
+            $own = $null
             foreach ($k in $kids) {
-                if ($k.Name -eq '.gitignore' -and -not ([int]$k.Attributes -band 16)) { $rules += @(Get-PSProfileIgnoreFile $k.FullName $entry.Dir) }
+                if ($k.Name -eq '.gitignore' -and -not ([int]$k.Attributes -band 16)) { $own = $k }
+                elseif ($k.Name -eq '.git' -and $head -gt 1) {
+                    $rules = @(Get-PSProfileIgnoreFile (Join-Path (Join-Path $k.FullName 'info') 'exclude') $entry.Dir)
+                }
             }
+            if ($own) { $rules += @(Get-PSProfileIgnoreFile $own.FullName $entry.Dir) }
         }
         foreach ($k in $kids) {
             $attr = [int]$k.Attributes
@@ -716,7 +726,7 @@ function global:recent {
     }
 }
 
-function global:Write-PSProfileMatchLine([string]$Line, [System.Text.RegularExpressions.Match[]]$Matches_) {
+function global:Write-PSProfileMatchLine([string]$Line, $Matches_) {
     $pos = 0
     foreach ($m in $Matches_) {
         if ($m.Length -eq 0) { continue }
@@ -761,6 +771,12 @@ function global:rg {
         $rx = $Pattern
         if ($SimpleMatch) { $rx = [regex]::Escape($Pattern) }
         if ($Word) { $rx = '\b(?:' + $rx + ')\b' }
+        $invalid = $false
+        try { $null = '' -match $rx } catch {
+            $invalid = $true
+            Write-Error "rg: '$Pattern' is not a valid pattern. Use -F for plain text."
+        }
+        $globRules = @(foreach ($g in $Glob) { if ($g) { ConvertTo-PSProfileIgnoreRule $g '' } })
         $ignore = $IgnoreCase -or (-not $CaseSensitive -and -not (Test-PSProfileUpper $Pattern))
         $selectArgs = @{ Pattern = $rx; CaseSensitive = (-not $ignore) }
         if ($InvertMatch) { $selectArgs.NotMatch = $true } else { $selectArgs.AllMatches = $true }
@@ -783,12 +799,8 @@ function global:rg {
             @{ Hit = $hit; Show = $show }
         }
         $search = {
-            param($file)
-            if ($Glob) {
-                $ok = $false
-                foreach ($g in $Glob) { if ($file.Name -like $g) { $ok = $true } }
-                if (-not $ok) { return }
-            }
+            param($file, $rel)
+            if ($globRules.Count -and -not (Test-PSProfileGlob $rel $globRules)) { return }
             $ext = $file.Extension.ToLower()
             if ($ext -eq '.doc' -or $ext -eq '.xls' -or $ext -eq '.ppt') { $skipped.Legacy++; return }
             if ($file.Length -gt $MaxSizeMB * 1MB) { $skipped.Large++; return }
@@ -845,12 +857,17 @@ function global:rg {
             $full = Get-PSProfileFullPath $p
             $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
             if (-not $item) { Write-Error "rg: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $search $item; return }
+            if (-not $item.PSIsContainer) { & $search $item $item.Name; return }
             if (Test-PSProfileWholeShare $full) {
                 Write-Error "rg: refusing a whole-share content search of '$full'. Give a folder or pipe fd results."
                 return
             }
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $search $_ }
+            $top = $full.TrimEnd('\', '/').Length + 1
+            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
+                $rel = ''
+                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
+                & $search $_ $rel
+            }
         }
         $piped = @{}
         $searchText = {
@@ -878,6 +895,7 @@ function global:rg {
         }
     }
     process {
+        if ($invalid) { return }
         foreach ($p in $Path) {
             if ($MyInvocation.ExpectingInput -and -not (Test-PSProfilePipedPath $p)) {
                 $piped[$piped.Count] = $p
@@ -888,6 +906,7 @@ function global:rg {
         }
     }
     end {
+        if ($invalid) { return }
         if ($piped.Count) { & $searchText }
         if (-not $seen -and -not $MyInvocation.ExpectingInput) { & $searchPath '.' }
         if ($skipped.Legacy -or $skipped.Large) {
@@ -1451,107 +1470,6 @@ function global:bat {
     }
 }
 
-function global:du {
-    param(
-        [Parameter(Position = 0)][string]$Path = '.',
-        [int]$Depth = 2
-    )
-    $toHost = Test-PSProfileToHost $MyInvocation
-    $top = (Get-PSProfileFullPath $Path).TrimEnd('\', '/')
-    $sep = '\'
-    if ($top.StartsWith('/')) { $sep = '/' }
-    if (-not $top) { $top = $sep }
-    $size = @{ $top = [long]0 }
-    $kids = @{ $top = @() }
-    $own = @{}
-    $entries = $null
-    if (Find-PSProfileRoot (ConvertTo-PSProfileUnc $top)) {
-        $entries = @(foreach ($line in @(Find-PSProfileFile -Path $top -Meta)) {
-            $f = $line.Split("`t")
-            @{ FullName = $f[2]; PSIsContainer = (-not $f[1]); Length = [long]('0' + $f[1]) }
-        })
-    } else {
-        $entries = @(Get-ChildItem -LiteralPath $top -Recurse -Force -ErrorAction SilentlyContinue)
-    }
-    foreach ($i in $entries) {
-        if ($i.FullName -eq $top) { continue }
-        $parent = $i.FullName.Substring(0, $i.FullName.LastIndexOf($sep))
-        if (-not $parent) { $parent = $sep }
-        if ($i.PSIsContainer) {
-            if (-not $size.ContainsKey($i.FullName)) { $size[$i.FullName] = [long]0; $kids[$i.FullName] = @() }
-            if (-not $kids.ContainsKey($parent)) { $kids[$parent] = @() }
-            $kids[$parent] += $i.FullName
-        } else {
-            $own[$parent] += $i.Length
-        }
-    }
-    foreach ($d in @($own.Keys)) {
-        $x = $d
-        while ($true) {
-            $size[$x] += $own[$d]
-            if ($x.Length -le $top.Length) { break }
-            $x = $x.Substring(0, $x.LastIndexOf($sep))
-            if (-not $x) { $x = $sep }
-        }
-    }
-    $show = {
-        param($Dir, $Level)
-        if ($toHost) {
-            Write-Host ('{0,10}  ' -f (Format-PSProfileSize $size[$Dir])) -ForegroundColor DarkGray -NoNewline
-            $filled = 0
-            if ($size[$top]) { $filled = [int](12 * $size[$Dir] / $size[$top]) }
-            if ($filled -lt 1 -and $size[$Dir]) { $filled = 1 }
-            Write-Host ([string][char]0x2588 * $filled) -ForegroundColor DarkCyan -NoNewline
-            Write-Host ([string][char]0x2591 * (12 - $filled) + '  ') -ForegroundColor DarkGray -NoNewline
-            $name = $Dir
-            if ($Level) { $name = ('  ' * $Level) + $Dir.Substring($Dir.LastIndexOf($sep) + 1) }
-            Write-Host $name -ForegroundColor Cyan
-        } else {
-            New-Object PSObject -Property @{ Size = $size[$Dir]; Path = $Dir } | Select-Object Size, Path
-        }
-        if ($Level -lt $Depth) {
-            foreach ($k in @($kids[$Dir] | Sort-Object { $size[$_] } -Descending)) { & $show $k ($Level + 1) }
-        }
-    }
-    & $show $top 0
-}
-
-function global:rgi {
-    param(
-        [Parameter(Mandatory = $true, Position = 0)][string]$Pattern,
-        [Parameter(Position = 1)][string[]]$Path,
-        [Alias('i')][switch]$IgnoreCase,
-        [switch]$Office
-    )
-    $a = @{ Pattern = $Pattern; IgnoreCase = $IgnoreCase; Office = $Office }
-    if ($Path) { $a.Path = $Path }
-    $pick = rg @a | fzf
-    if ($pick) { Invoke-Item -LiteralPath $pick.Path }
-}
-
-function global:br {
-    param([Parameter(Position = 0)][string]$Path = '.')
-    $dir = Get-PSProfileFullPath $Path
-    $sep = '\'
-    if ($dir.StartsWith('/')) { $sep = '/' }
-    while ($true) {
-        $base = $dir.TrimEnd('\', '/')
-        $items = @()
-        $up = Split-Path -Parent $dir
-        if ($up) { $items += New-Object PSObject -Property @{ Display = '..' + $sep; Path = $up; IsDir = $true } }
-        $items += @(Get-ChildItem -LiteralPath $dir -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object {
-            $d = $_.FullName.Substring($base.Length + 1)
-            if ($_.PSIsContainer) { $d += $sep }
-            New-Object PSObject -Property @{ Display = $d; Path = $_.FullName; IsDir = $_.PSIsContainer }
-        } | Sort-Object Display)
-        Write-Host "br: $dir" -ForegroundColor Magenta
-        $pick = $items | fzf
-        if (-not $pick) { return }
-        if (-not $pick.IsDir) { Invoke-Item -LiteralPath $pick.Path; return }
-        $dir = $pick.Path
-    }
-}
-
 function global:Get-PSProfileHistory {
     $file = (Get-PSReadLineOption).HistorySavePath
     if (-not (Test-Path -LiteralPath $file)) { return }
@@ -1603,49 +1521,40 @@ function global:Get-PSProfileReplacer {
     @{ Rx = $rx; Rep = $rep; Case = (-not $ignore) }
 }
 
-function global:Read-PSProfileBytes([string]$Path) {
-    if ($global:PSProfileFull -and $Path -match $global:PSProfileRootedRx) {
-        $fast = $null
-        try { $fast = [System.IO.File]::ReadAllBytes($Path) } catch { $fast = $null }
-        if ($null -ne $fast) { return , $fast }
-    }
-    $byteArgs = $global:PSProfileByteArgs
-    $bytes = Get-Content -LiteralPath $Path -ReadCount 0 @byteArgs -ErrorAction Stop
-    if ($null -eq $bytes) { return , @() }
-    if ($bytes -isnot [array]) { $bytes = @($bytes) }
-    , $bytes
+function global:Get-PSProfileHash {
+    [OutputType([string])]
+    param([string]$Path)
+    $h = Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop
+    if (-not $h) { throw "Cannot read '$Path'." }
+    $h.Hash
 }
 
-function global:Test-PSProfileSameBytes($A, $B) {
-    if ($A.Count -ne $B.Count) { return $false }
-    if ($global:PSProfileFull) {
-        try { return [System.Convert]::ToBase64String([byte[]]$A) -ceq [System.Convert]::ToBase64String([byte[]]$B) } catch { }
+function global:Copy-PSProfileBytes([string]$From, [string]$To, [switch]$NoBom) {
+    $byteArgs = $global:PSProfileByteArgs
+    $b = Get-Content -LiteralPath $From -ReadCount 0 @byteArgs -ErrorAction Stop
+    if ($null -eq $b) { $b = @() } elseif ($b -isnot [array]) { $b = @($b) }
+    if ($NoBom) {
+        if ($b.Count -lt 3 -or $b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { return }
+        if ($b.Count -eq 3) { $b = @() } else { $b = $b[3..($b.Count - 1)] }
     }
-    ($A -join ',') -ceq ($B -join ',')
+    if ($b.Count) { Set-Content -LiteralPath $To -Value $b @byteArgs -Force -WarningAction SilentlyContinue -ErrorAction Stop }
+    else { Set-Content -LiteralPath $To -Value '' -NoNewline -Encoding Ascii -Force -ErrorAction Stop }
 }
 
 function global:Write-PSProfileEncoded {
-    param([string]$Path, [string]$Text, [hashtable]$Source)
-    $utf8 = "$($Source.Enc)" -eq 'UTF8'
+    param([string]$Path, [string]$Text, [hashtable]$Source, [string]$Staged)
     $enc = $Source.Enc
-    if ($utf8) { $enc = $global:PSProfileUtf8Bom }
-    Set-Content -LiteralPath $Path -Value $Text -NoNewline -Encoding $enc -ErrorAction Stop
-    if (-not $utf8 -or $Source.Bom) { return }
-    $b = Read-PSProfileBytes $Path
-    if ($b.Count -lt 3 -or $b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { return }
-    if ($b.Count -eq 3) { Clear-Content -LiteralPath $Path -ErrorAction Stop; return }
-    $byteArgs = $global:PSProfileByteArgs
-    Set-Content -LiteralPath $Path -Value ($b[3..($b.Count - 1)]) @byteArgs -WarningAction SilentlyContinue -ErrorAction Stop
-}
-
-function global:Write-PSProfileBytes {
-    param([string]$Path, $Bytes)
-    if ($global:PSProfileFull -and $Path -match $global:PSProfileRootedRx) {
-        try { [System.IO.File]::WriteAllBytes($Path, [byte[]]$Bytes); return } catch { }
+    if ("$enc" -eq 'UTF8') {
+        if ($Source.Bom) { $enc = $global:PSProfileUtf8Bom }
+        elseif ($Text -cnotmatch '[^\x00-\x7F]') { $enc = 'Ascii' }
+        elseif ($Staged) { Copy-PSProfileBytes $Staged $Path; return }
+        else {
+            Set-Content -LiteralPath $Path -Value $Text -NoNewline -Encoding $global:PSProfileUtf8Bom -Force -ErrorAction Stop
+            Copy-PSProfileBytes $Path $Path -NoBom
+            return
+        }
     }
-    $byteArgs = $global:PSProfileByteArgs
-    if ($Bytes.Count) { Set-Content -LiteralPath $Path -Value $Bytes @byteArgs -Force -WarningAction SilentlyContinue -ErrorAction Stop }
-    else { Clear-Content -LiteralPath $Path -Force -ErrorAction Stop }
+    Set-Content -LiteralPath $Path -Value $Text -NoNewline -Encoding $enc -Force -ErrorAction Stop
 }
 
 function global:Save-PSProfileUndo([string]$Copy, [hashtable]$Undo) {
@@ -1666,63 +1575,48 @@ function global:Update-PSProfileTextFile {
     $stem = Join-Path $env:TEMP ('ps-profile-sd-' + (Get-Random))
     $keep = "$stem.orig"
     $next = "$stem.new"
-    $stage = "$stem.stage"
-    $keepOriginal = $false
+    $path = $File.FullName
     try {
         Write-PSProfileEncoded $keep $OldText $Source
-        $original = Read-PSProfileBytes $File.FullName
-        if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $keep) $original)) {
-            Write-Warning "sd: skipped '$($File.FullName)'. The profile cannot write this file back with the same bytes."
+        $oldHash = Get-PSProfileHash $path
+        if ((Get-PSProfileHash $keep) -ne $oldHash) {
+            $now = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($now.LastWriteTimeUtc -ne $File.LastWriteTimeUtc -or $now.Length -ne $File.Length) { Write-Warning "sd: skipped '$path'. The file changed during the run." }
+            else { Write-Warning "sd: skipped '$path'. The profile cannot write this file back with the same bytes." }
             return $false
         }
         Write-PSProfileEncoded $next $NewText $Source
         $check = '' + (Get-Content -LiteralPath $next -Raw -Encoding $Source.Enc -ErrorAction Stop)
         if ($check -cne $NewText) {
-            Write-Warning "sd: skipped '$($File.FullName)'. Its encoding cannot hold the new text."
+            Write-Warning "sd: skipped '$path'. Its encoding cannot hold the new text."
             return $false
         }
-        $bytes = Read-PSProfileBytes $next
-        if ($bytes.Count) {
-            Write-PSProfileBytes $stage $bytes
-            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $stage) $bytes)) {
-                Write-Warning "sd: skipped '$($File.FullName)'. A test write to a temporary file gave different bytes."
-                return $false
-            }
-        }
-        $now = Get-Item -LiteralPath $File.FullName -Force -ErrorAction Stop
-        if ($now.LastWriteTimeUtc -ne $File.LastWriteTimeUtc -or $now.Length -ne $File.Length) {
-            Write-Warning "sd: skipped '$($File.FullName)'. The file changed during the run."
-            return $false
-        }
+        $newHash = Get-PSProfileHash $next
         $slot = Save-PSProfileUndo $keep $Undo
+        $copy = Join-Path $Undo.Dir $slot
+        Add-Content -LiteralPath (Join-Path $Undo.Dir 'manifest.txt') -Value ("{0}`t{1}`t{2}`t{3}" -f $slot, $oldHash, $newHash, $path) -Encoding UTF8 -ErrorAction Stop
         try {
-            Write-PSProfileBytes $File.FullName $bytes
-            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $File.FullName) $bytes)) { throw 'The bytes on disk are not the new text.' }
+            Write-PSProfileEncoded $path $NewText $Source $next
+            if ((Get-PSProfileHash $path) -ne $newHash) { throw 'The bytes on disk are not the new text.' }
         } catch {
             $why = $_.Exception.Message
             try {
-                Write-PSProfileBytes $File.FullName $original
-                if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $File.FullName) $original)) { throw 'The bytes on disk are not the original.' }
-                Write-Warning "sd: could not write '$($File.FullName)'. The original is back in place. $why"
+                if ((Get-PSProfileHash $path) -ne $oldHash) {
+                    Copy-PSProfileBytes $copy $path
+                    if ((Get-PSProfileHash $path) -ne $oldHash) { throw 'The bytes on disk are not the original.' }
+                }
+                Write-Warning "sd: could not write '$path'. The file has its original text. $why"
             } catch {
-                $keepOriginal = $true
-                Write-Warning "sd: could not write '$($File.FullName)' or put the original back. A copy of the original is at '$keep'. $why"
+                Write-Warning "sd: could not write '$path' or put the original back. A copy of the original is at '$copy'. $why"
             }
             return $false
         }
-        try {
-            $written = Get-Item -LiteralPath $File.FullName -Force -ErrorAction Stop
-            Add-Content -LiteralPath (Join-Path $Undo.Dir 'manifest.txt') -Value ("{0}`t{1}`t{2}`t{3}" -f $slot, $written.Length, $written.LastWriteTimeUtc.Ticks, $written.FullName) -Encoding UTF8 -ErrorAction Stop
-        } catch {
-            Write-Warning "sd: changed '$($File.FullName)', but sd-undo cannot restore it. $($_.Exception.Message)"
-        }
         $true
     } catch {
-        Write-Warning "sd: skipped '$($File.FullName)'. $($_.Exception.Message)"
+        Write-Warning "sd: skipped '$path'. $($_.Exception.Message)"
         $false
     } finally {
-        Remove-Item -LiteralPath $next, $stage -Force -ErrorAction SilentlyContinue
-        if (-not $keepOriginal) { Remove-Item -LiteralPath $keep -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $keep, $next -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1736,19 +1630,21 @@ function global:sd-undo {
     $restored = 0
     foreach ($line in @(Get-Content -LiteralPath $manifest -Encoding UTF8)) {
         $f = $line.Split("`t")
-        $item = Get-Item -LiteralPath $f[3] -Force -ErrorAction SilentlyContinue
-        if (-not $item -or $item.Length -ne [long]$f[1] -or $item.LastWriteTimeUtc.Ticks -ne [long]$f[2]) {
-            Write-Warning "sd-undo: skipped '$($f[3])'. The file changed after sd ran."
+        $copy = Join-Path $dir $f[0]
+        $now = ''
+        try { $now = Get-PSProfileHash $f[3] } catch { $now = '' }
+        if ($now -and $now -eq $f[1]) { continue }
+        if ($now -ne $f[2]) {
+            Write-Warning "sd-undo: skipped '$($f[3])'. The file changed after sd ran. A copy of the original is at '$copy'."
             $left += $line
             continue
         }
         try {
-            $bytes = Read-PSProfileBytes (Join-Path $dir $f[0])
-            Write-PSProfileBytes $f[3] $bytes
-            if (-not (Test-PSProfileSameBytes (Read-PSProfileBytes $f[3]) $bytes)) { throw 'The bytes on disk are not the original.' }
+            Copy-PSProfileBytes $copy $f[3]
+            if ((Get-PSProfileHash $f[3]) -ne $f[1]) { throw 'The bytes on disk are not the original.' }
             $restored++
         } catch {
-            Write-Warning "sd-undo: could not restore '$($f[3])'. A copy of the original is at '$(Join-Path $dir $f[0])'. $($_.Exception.Message)"
+            Write-Warning "sd-undo: could not restore '$($f[3])'. A copy of the original is at '$copy'. $($_.Exception.Message)"
             $left += $line
         }
     }
@@ -1780,18 +1676,15 @@ function global:sd {
         $n = @{ Files = 0; Lines = 0; Written = 0; Failed = 0; ReadOnly = 0; Large = 0; Office = 0; Given = 0 }
         $done = @{}
         $undo = @{ Dir = $global:PSProfileSdUndoDir; Ready = $false; N = 0 }
+        $globRules = @(foreach ($g in $Glob) { if ($g) { ConvertTo-PSProfileIgnoreRule $g '' } })
         $edit = {
-            param($file)
+            param($file, $rel)
             $key = $file.FullName.ToLower()
             if ($done.ContainsKey($key)) { return }
             $done[$key] = $true
             if ($file.FullName -match '[\\/]\.git[\\/]') { return }
             if ([int]$file.Attributes -band 1024) { return }
-            if ($Glob) {
-                $ok = $false
-                foreach ($g in $Glob) { if ($file.Name -like $g) { $ok = $true } }
-                if (-not $ok) { return }
-            }
+            if ($globRules.Count -and -not (Test-PSProfileGlob $rel $globRules)) { return }
             if ($file.Extension -match '^\.(docx|xlsx|pptx|doc|xls|ppt)$') { $n.Office++; return }
             if ($file.Length -gt $MaxSizeMB * 1MB) { $n.Large++; return }
             $source = Read-PSProfileEncoded $file.FullName
@@ -1801,7 +1694,9 @@ function global:sd {
             if ($r.Case) { $any = @($parts) -cmatch $r.Rx } else { $any = @($parts) -match $r.Rx }
             if (-not @($any).Count) { return }
             $lines = 0
-            for ($j = 0; $j -lt $parts.Count; $j += 2) {
+            $last = $parts.Count - 1
+            if ($last -gt 0 -and $parts[$last] -eq '') { $last -= 2 }
+            for ($j = 0; $j -le $last; $j += 2) {
                 $old = $parts[$j]
                 if ($r.Case) { $new = $old -creplace $r.Rx, $r.Rep } else { $new = $old -replace $r.Rx, $r.Rep }
                 if ($new -ceq $old) { continue }
@@ -1829,9 +1724,14 @@ function global:sd {
             $full = Get-PSProfileFullPath $p
             $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
             if (-not $item) { Write-Error "sd: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $edit $item; return }
+            if (-not $item.PSIsContainer) { & $edit $item $item.Name; return }
             if (Test-PSProfileWholeShare $full) { Write-Error "sd: refusing to change a whole share at '$full'. Give a folder or pipe fd results."; return }
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object { & $edit $_ }
+            $top = $full.TrimEnd('\', '/').Length + 1
+            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
+                $rel = ''
+                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
+                & $edit $_ $rel
+            }
         }
     }
     process {
@@ -2017,47 +1917,6 @@ function global:Get-PSProfileAppLocker {
     $state
 }
 
-function global:canrun {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)][string]$Path,
-        [string]$User = "$env:USERDOMAIN\$env:USERNAME"
-    )
-    $toHost = Test-PSProfileToHost $MyInvocation
-    $target = ''
-    $file = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    if ($file -and -not $file.PSIsContainer) { $target = $file.FullName }
-    if (-not $target) {
-        $c = Get-Command -Name $Path -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($c) { $target = $c.Source }
-    }
-    if (-not $target) { Write-Error "canrun: '$Path' is not a file or a program on the Path."; return }
-    $state = Get-PSProfileAppLocker
-    if (-not $state.Available) { Write-Error 'canrun: this computer does not have the AppLocker commands, so canrun cannot check.'; return }
-    if ($state.Error) { Write-Error "canrun: could not read the AppLocker policy. $($state.Error)"; return }
-    if ($state.Rules -eq 0) { Write-Host 'canrun: Group Policy has no AppLocker rules for this computer. Rules from MDM do not show here.' -ForegroundColor DarkGray; return }
-    try {
-        $result = $state.Policy | Test-AppLockerPolicy -Path $target -User $User -ErrorAction Stop | Select-Object -First 1
-    } catch {
-        Write-Error "canrun: the check failed. $($_.Exception.Message)"
-        return
-    }
-    $decision = "$(Get-PSProfileProperty $result 'PolicyDecision')"
-    if (-not $decision) { Write-Error "canrun: AppLocker gave no decision for '$target'."; return }
-    $rule = "$(Get-PSProfileProperty $result 'MatchingRule')"
-    if (-not $toHost) {
-        New-Object PSObject -Property @{ Path = $target; Decision = $decision; Rule = $rule; AuditOnly = $state.Audit } | Select-Object Path, Decision, Rule, AuditOnly
-        return
-    }
-    $color = 'Green'
-    if ($decision -match 'Denied') { $color = 'Red' }
-    Write-Host $decision -ForegroundColor $color -NoNewline
-    Write-Host "  $target"
-    if ($rule) { Write-Host "Rule: $rule" -ForegroundColor DarkGray }
-    if ($state.Audit) { Write-Host 'Some AppLocker rules are in audit mode, so a denied program can still run.' -ForegroundColor Yellow }
-    Write-Host 'This check reads AppLocker rules from Group Policy only. WDAC and MDM policies can also block a program.' -ForegroundColor DarkGray
-}
-
 function global:New-PSProfileCheck([string]$Check, [string]$Status, [string]$Detail) {
     New-Object PSObject -Property @{ Check = $Check; Status = $Status; Detail = $Detail } | Select-Object Status, Check, Detail
 }
@@ -2084,8 +1943,6 @@ function global:doctor {
         New-PSProfileCheck 'Profile version' 'INFO' $global:PSProfileVersion
         New-PSProfileCheck 'PowerShell version' 'INFO' "$($PSVersionTable.PSVersion)"
         New-PSProfileCheck 'Language mode' 'INFO' "$($ExecutionContext.SessionState.LanguageMode)"
-        if ($global:PSProfileFull) { New-PSProfileCheck 'Fast file access' 'INFO' 'On. FullLanguage mode lets the profile use .NET to list folders and read files.' }
-        else { New-PSProfileCheck 'Fast file access' 'INFO' 'Off. This language mode permits cmdlets only.' }
         New-PSProfileCheck 'Execution policy' 'INFO' "$(Get-ExecutionPolicy)"
         foreach ($d in @(@('Data folder', $global:PSProfileDataDir), @('Temp folder', $env:TEMP))) {
             if (Test-PSProfileWritable $d[1]) { New-PSProfileCheck $d[0] 'OK' $d[1] }
@@ -2103,7 +1960,7 @@ function global:doctor {
             else { New-PSProfileCheck $k 'WARN' "Missing. These do not work: $($needs[$k])." }
         }
         $state = Get-PSProfileAppLocker
-        if (-not $state.Available) { New-PSProfileCheck 'AppLocker' 'WARN' 'The AppLocker commands are missing, so canrun does not work.' }
+        if (-not $state.Available) { New-PSProfileCheck 'AppLocker' 'WARN' 'The AppLocker commands are missing.' }
         elseif ($state.Error) { New-PSProfileCheck 'AppLocker' 'WARN' "Cannot read the policy: $($state.Error)" }
         elseif ($state.Rules -lt 0) { New-PSProfileCheck 'AppLocker' 'WARN' 'Cannot count the rules in the policy.' }
         elseif ($state.Rules -eq 0) { New-PSProfileCheck 'AppLocker' 'INFO' 'No rules in Group Policy. Rules from MDM do not show here.' }
@@ -2161,22 +2018,14 @@ $global:PSProfileTldr = [ordered]@{
                      'fd -Ext csv | rg total  # Search only the files that fd finds'
     'grep'         = 'Alias of rg.',
                      'grep -i error log.txt  # Same as rg -i error log.txt'
-    'rgi'          = 'Content search in the picker. A pick opens the file.',
-                     'rgi budget -Office  # Pick a match. The preview shows the lines around it.'
     'fzf'          = 'Pick an item from a list. Type text to filter. The preview shows item 1.',
                      'fd report | fzf  # Pick a file. Type #2 to pick item 2.',
                      'Get-Process | fzf  # Pick any object'
-    'br'           = 'Browse folders in the picker. A folder enters it, a file opens it.',
-                     'br  # Browse the current folder',
-                     'br S:\Finance  # Browse a share folder'
     'bat'          = 'Show a file with line numbers. Office files show as text.',
                      'bat notes.txt  # Whole file',
                      'bat report.docx  # Text of a Word file',
                      'bat log.txt -Range 100-200  # Lines 100 to 200',
                      'bat log.txt -Pattern error  # Highlight error'
-    'du'           = 'Folder sizes as a tree, largest first.',
-                     'du  # Two levels under the current folder',
-                     'du S:\Finance -Depth 1  # One level under a folder'
     'z'            = 'Go to a folder that you used before. zi shows a picker.',
                      'z fin  # Best folder that matches fin',
                      'zi  # Pick a folder from the list'
@@ -2244,9 +2093,6 @@ $global:PSProfileTldr = [ordered]@{
                      "fd -t d temp | rnm 'temp' 'tmp'  # Rename the folders that fd finds"
     'doctor'       = 'Check what the profile can use on this computer.',
                      'doctor  # Language mode, folders, commands, share roots and index'
-    'canrun'       = 'Show if AppLocker allows a program for you.',
-                     'canrun C:\Tools\app.exe  # Check a file',
-                     'canrun python  # Check a program on the Path'
     'Update-Index' = 'Build or refresh the file index for ShareRoots.',
                      'Update-Index  # All share roots',
                      "Update-Index 'S:\Finance\2026'  # One folder"

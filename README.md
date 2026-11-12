@@ -16,12 +16,9 @@ The profile adds these commands:
 |---|---|
 | `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. In a Git repository, files that `.gitignore` ignores show only with `-I`. Uses the file index for folders under `ShareRoots`. |
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. |
-| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B`, `-C` and `-g`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
-| `rgi` | Search file content and pick a match in the picker. The preview shows the lines around the match. The pick opens the file. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Use `-g` to search only the files that match a glob, for example `-g *.txt` or `-g src/**`. Use `-g !*.log` to exclude files. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B` and `-C`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
-| `br` | Browse a folder in the picker. The picker shows 2 levels. A folder pick enters the folder. A file pick opens the file. |
 | `bat` | Show a file with line numbers and basic syntax colors. Office files show as text. Use `-Range 100-200` to show some lines and `-Pattern` to highlight text. |
-| `du` | Show folder sizes as a tree with bars, largest first. Use `-Depth` to change the number of levels. |
 | `tldr` | Show examples for the profile commands. Run `tldr` with no argument to list the commands. |
 | `z`, `zi` | Jump to a folder you used before. `zi` shows a picker. |
 | `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
@@ -29,7 +26,6 @@ The profile adds these commands:
 | `sd` | Replace text in files, line by line. It shows a preview and changes no file until you add `-Apply`. It keeps the encoding and the line endings of each file. It skips hidden files, dot files and the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Other options are `-F`, `-w`, `-i`, `-s` and `-g`. `sd-undo` restores the files that the last `-Apply` changed. |
 | `rnm` | Rename files by regex. It shows a preview and changes no name until you add `-Apply`. Use `-r` for subfolders and `-Folders` to rename folders too. A name conflict stops the whole run. If a rename fails, the command undoes the renames that it made. |
 | `doctor` | Check the language mode, the data folders, the commands that the profile needs, the share roots and the index. |
-| `canrun` | Show if AppLocker allows a program for you. It reads AppLocker rules from Group Policy only. It does not see AppLocker rules from MDM or WDAC policies. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
 | `wc`, `head`, `tail`, `which`, `touch` | Small versions of common Unix commands. `wc` takes `-l`, `-w` and `-c`. `tail -f` shows new lines as they arrive. |
@@ -39,7 +35,7 @@ The profile adds these commands:
 
 ## Picker and preview
 
-The picker (`fzf`, `zi`, `rgi`, `br`, Ctrl+R and Ctrl+T) shows a preview at the side of the list. The preview shows item 1 of the list:
+The picker (`fzf`, `zi`, Ctrl+R and Ctrl+T) shows a preview at the side of the list. The preview shows item 1 of the list:
 
 - For a file, the preview shows the first lines with line numbers, as `bat` shows them. Office files show as text.
 - For a folder, the preview shows the items in the folder.
@@ -72,7 +68,7 @@ In a Git repository, the prompt shows the branch after the folder. The prompt re
 
 1. Open Windows PowerShell and run `$PROFILE`. The output is the path of the profile file.
 2. If the file does not exist, create it at that path.
-3. Download [`Microsoft.PowerShell_profile.ps1` version 1.6.0](https://github.com/yujieteo/ps-profile/releases/download/v1.6.0/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
+3. Download [`Microsoft.PowerShell_profile.ps1` version 2.0.0](https://github.com/yujieteo/ps-profile/releases/download/v2.0.0/Microsoft.PowerShell_profile.ps1). Copy it to that path. Replace the file if it exists.
 4. Open a new Windows PowerShell window.
 5. Run `$PSProfileVersion` to see the installed version.
 
@@ -111,40 +107,48 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 - `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 - `share-roots.txt`: your share roots, if you create this file.
-- `sd-undo`: copies of the files that the last `sd -Apply` changed. The next `sd -Apply` replaces them.
+- `sd-undo`: copies of the files that the last `sd -Apply` changed, and a list of them. The list has the hash of each file before and after the change. The next `sd -Apply` replaces them.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
 
-`sd -Apply` writes temporary copies to `$env:TEMP` and deletes them after each file. If a write fails, `sd` puts the original back. If it cannot, it keeps a copy of the original there and shows its path.
+`sd -Apply` writes temporary copies to `$env:TEMP` and deletes them after each file. It saves the copy of the original in the `sd-undo` folder before it changes the file. Then it writes the new text to the file in place, so the file keeps its permissions. If a write fails, `sd` puts the original back. If it cannot, it shows the path of the copy.
 
 ## ConstrainedLanguage limits
 
-The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. In FullLanguage mode only, it lists folders and reads files with .NET, which is faster. Run `doctor` to see which mode applies. Because of these limits:
+The profile does not use `Add-Type`, COM objects, or `Invoke-Expression`. It calls methods only on the types that ConstrainedLanguage mode permits. Run `doctor` to see the language mode. Because of these limits:
 
 - The commands are PowerShell code. They do not call external programs such as `rg.exe` or `fzf.exe`.
 - `ep` starts `notepad.exe`.
 - `rg -Office`, `bat`, `delta` and the preview read Office files. They unpack the file and read its XML. The commands do not read legacy `.doc`, `.xls` and `.ppt` files.
 - `rg` skips binary files and files over 20 MB by default. Use `-MaxSizeMB` to change the limit.
-- `rg` and `rgi` refuse a content search of a whole share. Give a folder instead.
+- `rg` refuses a content search of a whole share. Give a folder instead.
 - The picker uses `Read-Host`. Type text and press Enter to filter. Type `#` and the item number, for example `#12`, and press Enter to pick. A plain number filters the list. It does not filter on each key.
 - `bat` colors files of up to 5000 lines.
-- `fd` and `rg` read `.gitignore` files and `.git/info/exclude`. They do not read the global Git ignore file.
+- `fd` and `rg` read `.gitignore` files and `.git/info/exclude`. They do not read the global Git ignore file or `.ignore` files. Names match without regard to case. In a repository inside a repository, only the rules of the inner repository apply. A pattern that is not valid gives a warning, and the profile does not use it.
 - Ctrl+R and Ctrl+T put the pick on the clipboard, not on the command line. See [Keys](#keys).
 - `sd` matches one line at a time, so a pattern cannot span lines. It does not change Office files, binary files, read-only files or files over 20 MB.
-- `sd-undo` restores only the last `sd -Apply` run, and it skips a file that changed after that run.
+- `sd-undo` restores only the last `sd -Apply` run. It compares the hash of each file with the hash that `sd` wrote, and it skips a file that changed after that run.
 - `sd` skips a file if it cannot write the file back with the same bytes, or if the file encoding cannot hold the new text.
+
+## Tests
+
+`tests.ps1` compares the profile with `git check-ignore`, `rg`, `fd` and `sd` when they are on the computer. It also checks the bytes that `sd` and `rnm` write. It runs in ConstrainedLanguage mode and uses a temporary folder. Run it in a new process:
+
+```powershell
+powershell -NoProfile -File tests.ps1
+```
 
 ## Release
 
-The current version is 1.6.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 2.0.0. See [CHANGELOG.md](CHANGELOG.md).
 
 Before the merge, change the version in line 1 of the profile, in [CHANGELOG.md](CHANGELOG.md), in [Install](#install) and in this section.
 
 After the change merges to the default branch:
 
-1. Run `git tag v1.6.0` on the merged commit.
-2. Run `git push origin v1.6.0`.
-3. Create a GitHub release for the tag `v1.6.0`.
+1. Run `git tag v2.0.0` on the merged commit.
+2. Run `git push origin v2.0.0`.
+3. Create a GitHub release for the tag `v2.0.0`.
 4. Attach `Microsoft.PowerShell_profile.ps1` to the release.
 
 ## License
