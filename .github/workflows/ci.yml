@@ -28,12 +28,12 @@ jobs:
       POWERSHELL_TELEMETRY_OPTOUT: '1'
       POWERSHELL_UPDATECHECK: 'Off'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Each job runs as a new user with no home folder. Nix and PowerShell want one.
       - name: Make a home folder
         run: |
           mkdir -p "$RUNNER_TEMP/home"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # git is already on the runner. PowerShell, fd, rg and sd come from nixpkgs.
       - name: Run tests.ps1
         run: |
