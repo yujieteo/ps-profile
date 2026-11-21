@@ -1557,9 +1557,19 @@ function global:Write-PSProfileEncoded {
     Set-Content -LiteralPath $Path -Value $Text -NoNewline -Encoding $enc -Force -ErrorAction Stop
 }
 
+# The first copy of a run moves the undo folder of the last run to sd-undo.prev.
+# The new copies go to sd-undo. When the run changes a file, sd-undo.prev goes away.
+# When the write fails and the file keeps its original bytes, the old folder comes back.
 function global:Save-PSProfileUndo([string]$Copy, [hashtable]$Undo) {
     if (-not $Undo.Ready) {
-        Remove-Item -LiteralPath $Undo.Dir -Recurse -Force -ErrorAction SilentlyContinue
+        if ($Undo.Stuck) { throw "The undo copies of the last run are at '$($Undo.Dir).prev'. sd changes no more files in this run." }
+        $prev = $Undo.Dir + '.prev'
+        Remove-Item -LiteralPath $prev -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $prev) { throw "Cannot remove '$prev'." }
+        if (Test-Path -LiteralPath $Undo.Dir) {
+            Rename-Item -LiteralPath $Undo.Dir -NewName (Split-Path -Leaf $prev) -ErrorAction Stop
+            $Undo.Prev = $prev
+        }
         New-Item -ItemType Directory -Path $Undo.Dir -Force -ErrorAction Stop | Out-Null
         $Undo.Ready = $true
     }
@@ -1567,6 +1577,28 @@ function global:Save-PSProfileUndo([string]$Copy, [hashtable]$Undo) {
     $name = "$($Undo.N).orig"
     Copy-Item -LiteralPath $Copy -Destination (Join-Path $Undo.Dir $name) -Force -ErrorAction Stop
     $name
+}
+
+function global:Complete-PSProfileUndo([hashtable]$Undo) {
+    if ($Undo.Kept) { return }
+    if ($Undo.Prev) { Remove-Item -LiteralPath $Undo.Prev -Recurse -Force -ErrorAction SilentlyContinue }
+    $Undo.Prev = ''
+    $Undo.Kept = $true
+}
+
+function global:Restore-PSProfileUndo([hashtable]$Undo) {
+    if ($Undo.Kept -or -not ($Undo.Ready -or $Undo.Prev)) { return }
+    if ($Undo.Ready) { Remove-Item -LiteralPath $Undo.Dir -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($Undo.Prev) {
+        try { Rename-Item -LiteralPath $Undo.Prev -NewName (Split-Path -Leaf $Undo.Dir) -ErrorAction Stop }
+        catch {
+            Write-Warning "sd: could not put back the undo copies of the last run. They are at '$($Undo.Prev)'. $($_.Exception.Message)"
+            $Undo.Stuck = $true
+        }
+    }
+    $Undo.Ready = $false
+    $Undo.N = 0
+    $Undo.Prev = ''
 }
 
 function global:Update-PSProfileTextFile {
@@ -1608,12 +1640,17 @@ function global:Update-PSProfileTextFile {
                 Write-Warning "sd: could not write '$path'. The file has its original text. $why"
             } catch {
                 Write-Warning "sd: could not write '$path' or put the original back. A copy of the original is at '$copy'. $why"
+                Complete-PSProfileUndo $Undo
+                return $false
             }
+            Restore-PSProfileUndo $Undo
             return $false
         }
+        Complete-PSProfileUndo $Undo
         $true
     } catch {
         Write-Warning "sd: skipped '$path'. $($_.Exception.Message)"
+        Restore-PSProfileUndo $Undo
         $false
     } finally {
         Remove-Item -LiteralPath $keep, $next -Force -ErrorAction SilentlyContinue
@@ -1675,7 +1712,7 @@ function global:sd {
         $r = Get-PSProfileReplacer -Command 'sd' -Pattern $Pattern -Replacement $Replacement -IgnoreCase:$IgnoreCase -CaseSensitive:$CaseSensitive -SimpleMatch:$SimpleMatch -Word:$Word
         $n = @{ Files = 0; Lines = 0; Written = 0; Failed = 0; ReadOnly = 0; Large = 0; Office = 0; Given = 0 }
         $done = @{}
-        $undo = @{ Dir = $global:PSProfileSdUndoDir; Ready = $false; N = 0 }
+        $undo = @{ Dir = $global:PSProfileSdUndoDir; Ready = $false; N = 0; Prev = ''; Kept = $false; Stuck = $false }
         $globRules = @(foreach ($g in $Glob) { if ($g) { ConvertTo-PSProfileIgnoreRule $g '' } })
         $edit = {
             param($file, $rel)

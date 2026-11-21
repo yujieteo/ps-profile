@@ -7,6 +7,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed `sd -Apply` keeps the undo copies of the last run when it changes no file. Before, the first write deleted them before it tried to change the file, so `sd-undo` could not restore the last run.
+
 ## [2.0.0] - 2026-11-12
 
 ### Added in 2.0.0
