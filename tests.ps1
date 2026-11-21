@@ -527,6 +527,63 @@ try {
         Assert-Equal ($bad -join ' | ') '' 'searches that differ'
     }
 
+    Test-Case 'the index file name has a hash that keeps sibling share roots apart, and equal spellings of one root share it' {
+        Assert-Equal (Get-PSProfileTextHash '') '811c9dc5' 'hash of the empty text'
+        Assert-Equal (Get-PSProfileTextHash 'a') 'e40c292c' 'hash of a'
+        Assert-Equal (Get-PSProfileTextHash 'foobar') 'bf9cf968' 'hash of foobar'
+        $r = @(ConvertTo-PSProfileRoot @('\\example\team\Reports-2026', '\\example\team\Reports_2026', '\\Example\Team\reports-2026\', '\\example/team/Reports-2026/', '//example/team/Reports-2026'))
+        Assert-Equal $r.Count 5 'roots'
+        Assert-True ($r[0].Base -ne $r[1].Base) "the sibling roots share the name '$($r[0].Base)'"
+        Assert-Equal $r[2].Base $r[0].Base 'name for another case and a backslash at the end'
+        Assert-Equal $r[3].Base $r[0].Base 'name for forward slashes'
+        Assert-Equal $r[3].Unc '\\example\team\Reports-2026' 'root with forward slashes'
+        Assert-Equal $r[4].Base $r[0].Base 'name for a root with only forward slashes'
+        Assert-Equal $r[4].Sep '\' 'separator for a root with only forward slashes'
+        Assert-True ((Split-Path -Leaf $r[0].Base) -cmatch '^idx3_[a-z0-9_]+_[0-9a-f]{8}$') "the name '$($r[0].Base)' does not have the form idx3_<name>_<hash>"
+    }
+
+    Test-Case 'the index of two sibling share roots keeps their files apart, at the first build and at a refresh after 24 hours' {
+        $top = Join-Path $WorkDir 'shares'
+        $one = Join-Path $top 'Reports-2026'
+        $two = Join-Path $top 'Reports_2026'
+        Add-File $one 'dash.txt' (ConvertTo-Hex "x`n")
+        Add-File $two 'under.txt' (ConvertTo-Hex "x`n")
+        $data = Join-Path $WorkDir 'shares-data'
+        New-Item -ItemType Directory -Path $data -Force | Out-Null
+        Add-File $data 'idx2__old_root.idx' (ConvertTo-Hex "x`n")
+        $kept = @{ DataDir = $global:PSProfileDataDir; ShareRoots = $global:ShareRoots; Roots = $global:PSProfileRoots; Cache = $global:PSProfileIndexCache }
+        try {
+            $global:PSProfileDataDir = $data
+            $global:ShareRoots = @($one, $two)
+            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
+            $global:PSProfileIndexCache = @{}
+            $list = Get-PSProfileRootList $global:PSProfileRoots
+            # The same arguments as the job that the profile starts at load: no pause, and skip an index of less than 24 hours.
+            $run = Invoke-Captured { & $global:PSProfileIndexBuilder $list $data '' 0 24 }
+            Assert-Quiet $run 'the first build'
+            Assert-Same @((fd . $one -t f) | ForEach-Object { ConvertTo-Rel $top "$_" }) @('Reports-2026/dash.txt') 'fd in Reports-2026 after the first build'
+            Assert-Same @((fd . $two -t f) | ForEach-Object { ConvertTo-Rel $top "$_" }) @('Reports_2026/under.txt') 'fd in Reports_2026 after the first build'
+            Assert-Equal @(Get-ChildItem -LiteralPath $data -Filter 'idx2_*').Count 0 'old idx2_ files after the build'
+
+            Add-File $one 'dash-new.txt' (ConvertTo-Hex "x`n")
+            Add-File $two 'under-new.txt' (ConvertTo-Hex "x`n")
+            $oneIdx = "$($global:PSProfileRoots[0].Base).idx"
+            $twoIdx = "$($global:PSProfileRoots[1].Base).idx"
+            Set-ItemProperty -LiteralPath $oneIdx -Name LastWriteTime -Value (Get-Date).AddHours(-25)
+            $twoBefore = Get-State $data | Where-Object { $_ -like ((Split-Path -Leaf $twoIdx) + ' *') }
+            $run = Invoke-Captured { & $global:PSProfileIndexBuilder $list $data '' 0 24 }
+            Assert-Quiet $run 'the refresh'
+            Assert-Same @((fd . $one -t f) | ForEach-Object { ConvertTo-Rel $top "$_" }) @('Reports-2026/dash.txt', 'Reports-2026/dash-new.txt') 'fd in Reports-2026 after the refresh'
+            Assert-Same @((fd . $two -t f) | ForEach-Object { ConvertTo-Rel $top "$_" }) @('Reports_2026/under.txt') 'fd in Reports_2026 after the refresh, whose index is new'
+            Assert-Equal (Get-State $data | Where-Object { $_ -like ((Split-Path -Leaf $twoIdx) + ' *') }) $twoBefore 'the index of Reports_2026'
+        } finally {
+            $global:PSProfileDataDir = $kept.DataDir
+            $global:ShareRoots = $kept.ShareRoots
+            $global:PSProfileRoots = $kept.Roots
+            $global:PSProfileIndexCache = $kept.Cache
+        }
+    }
+
     Test-Case 'sd without -Apply changes no byte and no file time' {
         $dir = New-TextTree 'sd-preview'
         $before = Get-State $dir -Time

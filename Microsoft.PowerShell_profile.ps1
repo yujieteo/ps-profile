@@ -238,6 +238,15 @@ function global:ConvertFrom-PSProfileOffice([string]$Path) {
     }
 }
 
+# FNV-1a, 32 bits, over the UTF-16 code units of the text.
+function global:Get-PSProfileTextHash {
+    [OutputType([string])]
+    param([string]$Text)
+    $h = [long]2166136261
+    foreach ($ch in $Text.ToCharArray()) { $h = (($h -bxor [int]$ch) * 16777619) % 4294967296 }
+    '{0:x8}' -f $h
+}
+
 function global:ConvertTo-PSProfileRoot {
     [OutputType([hashtable])]
     param([object[]]$ShareRoots)
@@ -247,17 +256,31 @@ function global:ConvertTo-PSProfileRoot {
             continue
         }
         $unc = ConvertTo-PSProfileUnc ($r.TrimEnd('\', '/'))
+        # A Unix path starts with one slash. Every other root is a Windows path and gets backslashes.
+        if (-not $unc.StartsWith('/') -or $unc.StartsWith('//')) { $unc = $unc.Replace('/', '\') }
         if ($unc -match '^[A-Za-z]:') {
             Write-Warning ("`$ShareRoots: '{0}' is not on a mapped network drive, so the index uses the path as typed. Example of a mapped drive folder: 'S:\Finance'." -f $r)
         }
         $sep = '\'
         if ($unc.StartsWith('/')) { $sep = '/' }
+        # Windows paths ignore case, so the name uses the lower-case root.
+        # The hash keeps two roots apart when their readable names are the same.
+        $key = $unc.ToLower()
+        $name = $key -replace '[^a-z0-9]+', '_'
+        if ($name.Length -gt 60) { $name = $name.Substring($name.Length - 60) }
         @{
             Unc  = $unc
             Sep  = $sep
-            Base = Join-Path $global:PSProfileDataDir ('idx2_' + ($unc -replace '[^A-Za-z0-9]+', '_'))
+            Base = Join-Path $global:PSProfileDataDir ('idx3_' + $name + '_' + (Get-PSProfileTextHash $key))
         }
     }
+}
+
+# One line for each root: the root, a tab, and the start of the names of its index files.
+function global:Get-PSProfileRootList {
+    [OutputType([string])]
+    param([object[]]$Roots)
+    (@(foreach ($r in $Roots) { $r.Unc + "`t" + $r.Base }) -join "`n")
 }
 
 $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
@@ -277,11 +300,12 @@ $global:PSProfileIndexBuilder = {
     try { New-Item -ItemType File -Path $lock -Value "$PID" -ErrorAction Stop | Out-Null }
     catch { Write-Warning 'An index build is already running in another window.'; return }
     try {
-        foreach ($root in ($RootList -split "`n")) {
-            if (-not $root) { continue }
+        foreach ($entry in ($RootList -split "`n")) {
+            if (-not $entry) { continue }
+            $root, $base = $entry.Split("`t")
+            if (-not $base) { continue }
             $sep = '\'
             if ($root.StartsWith('/')) { $sep = '/' }
-            $base = Join-Path $DataDir ('idx2_' + ($root -replace '[^A-Za-z0-9]+', '_'))
             if ($MaxAgeHours -gt 0) {
                 $i = Get-Item -LiteralPath "$base.idx" -ErrorAction SilentlyContinue
                 if ($i -and -not (Test-Path -LiteralPath "$base.partial") -and $i.LastWriteTime -gt (Get-Date).AddHours(-$MaxAgeHours)) { continue }
@@ -379,6 +403,8 @@ $global:PSProfileIndexBuilder = {
             & $save $new $null
             Remove-Item -LiteralPath "$base.partial" -Force -ErrorAction SilentlyContinue
         }
+        # Version 2.0.0 and before named the files idx2_*. Two roots could share one name, so the profile does not read them.
+        Get-ChildItem -LiteralPath $DataDir -Filter 'idx2_*' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     } finally {
         Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
     }
@@ -422,17 +448,17 @@ function global:Get-PSProfileIndex([hashtable]$Root) {
 
 function global:Update-Index {
     param([Parameter(Position = 0)][string]$Path)
-    $roots = @($global:PSProfileRoots | ForEach-Object { $_.Unc })
+    $roots = @($global:PSProfileRoots)
     $start = ''
     if ($Path) {
         $unc = ConvertTo-PSProfileUnc (Get-PSProfileFullPath $Path)
         $root = Find-PSProfileRoot $unc
         if (-not $root) { Write-Error "Update-Index: '$Path' is not under a root in `$ShareRoots."; return }
-        $roots = @($root.Unc)
+        $roots = @($root)
         $start = $unc.TrimEnd($root.Sep)
     }
     if (-not $roots.Count) { Write-Warning 'Update-Index: $ShareRoots is empty.'; return }
-    & $global:PSProfileIndexBuilder ($roots -join "`n") $global:PSProfileDataDir $start 0 0
+    & $global:PSProfileIndexBuilder (Get-PSProfileRootList $roots) $global:PSProfileDataDir $start 0 0
 }
 
 function global:ConvertTo-PSProfileIgnoreRule([string]$Line, [string]$Base, [string]$File) {
@@ -2404,7 +2430,7 @@ function global:prompt {
 }
 
 if ((Get-PSProfileIndexState) -eq 'old') {
-    $roots = ($global:PSProfileRoots | ForEach-Object { $_.Unc }) -join "`n"
+    $roots = Get-PSProfileRootList $global:PSProfileRoots
     try {
         Start-Job -Name 'ps-profile-index' -ScriptBlock $global:PSProfileIndexBuilder -ArgumentList $roots, $global:PSProfileDataDir, '', 10, 24 -ErrorAction Stop | Out-Null
     } catch {

@@ -10,6 +10,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A failed `sd -Apply` keeps the undo copies of the last run when it changes no file. Before, the first write deleted them before it tried to change the file, so `sd-undo` could not restore the last run.
+- Two share roots with names that differ only in characters that are not letters or digits, for example `\\example\team\Reports-2026` and `\\example\team\Reports_2026`, get their own index. Before, they shared one index file, and `fd` in one root could miss its files. The index files have the new name `idx3_*`, with a hash of the root in lower case. The profile builds the index of each share root again one time, and the index build deletes the old `idx2_*` files.
+- A share root with forward slashes, for example `\\example/team` or `//example/team`, uses backslashes and the same index as `\\example\team`.
 
 ## [2.0.0] - 2026-11-12
 
