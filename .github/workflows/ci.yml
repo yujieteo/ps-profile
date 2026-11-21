@@ -1,0 +1,56 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+# The job only reads the repository.
+permissions:
+  contents: read
+# A new push to a pull request cancels the run for the older push.
+# Runs on main are never cancelled, so each commit there gets a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# The bash shell of Actions stops at the first failing command, also inside a pipe.
+defaults:
+  run:
+    shell: bash
+jobs:
+  tests:
+    # The desktop runner is NixOS, so the tests run on PowerShell for Linux,
+    # not on Windows. They still run in ConstrainedLanguage mode and compare
+    # the profile with the real git, rg, fd and sd. The one test that needs
+    # Windows (a file lock) skips itself.
+    runs-on: [self-hosted, desktop]
+    timeout-minutes: 20
+    env:
+      # PowerShell would otherwise send telemetry and look for updates.
+      POWERSHELL_TELEMETRY_OPTOUT: '1'
+      POWERSHELL_UPDATECHECK: 'Off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Each job runs as a new user with no home folder. Nix and PowerShell want one.
+      - name: Make a home folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+      # git is already on the runner. PowerShell, fd, rg and sd come from nixpkgs.
+      - name: Run tests.ps1
+        run: |
+          nix shell nixpkgs#powershell nixpkgs#fd nixpkgs#ripgrep nixpkgs#sd \
+            -c pwsh -NoProfile -File tests.ps1 -WorkDir "$RUNNER_TEMP/ps-profile-tests" \
+            | tee "$RUNNER_TEMP/tests.out"
+      # tests.ps1 skips a test, and still passes, when a tool is missing.
+      # This step makes sure that all four tools were found and that only the
+      # Windows test was skipped, so a missing tool cannot pass in silence.
+      - name: All tools were found and only the Windows test skipped
+        run: |
+          out="$(< "$RUNNER_TEMP/tests.out")"
+          if [[ $out != *"real tools: git, rg, fd, sd"* ]]; then
+            echo "tests.ps1 did not find all of git, rg, fd and sd." >&2
+            exit 1
+          fi
+          if [[ $out != *" 0 failed, 1 skipped"* ]]; then
+            echo "tests.ps1 skipped more or fewer tests than the one Windows test." >&2
+            exit 1
+          fi
