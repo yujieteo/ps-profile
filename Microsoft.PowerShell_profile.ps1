@@ -256,7 +256,8 @@ function global:ConvertTo-PSProfileRoot {
             continue
         }
         $unc = ConvertTo-PSProfileUnc ($r.TrimEnd('\', '/'))
-        if (-not $unc.StartsWith('/')) { $unc = $unc.Replace('/', '\') }
+        # A Unix path starts with one slash. Every other root is a Windows path and gets backslashes.
+        if (-not $unc.StartsWith('/') -or $unc.StartsWith('//')) { $unc = $unc.Replace('/', '\') }
         if ($unc -match '^[A-Za-z]:') {
             Write-Warning ("`$ShareRoots: '{0}' is not on a mapped network drive, so the index uses the path as typed. Example of a mapped drive folder: 'S:\Finance'." -f $r)
         }

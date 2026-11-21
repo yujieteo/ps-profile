@@ -531,12 +531,14 @@ try {
         Assert-Equal (Get-PSProfileTextHash '') '811c9dc5' 'hash of the empty text'
         Assert-Equal (Get-PSProfileTextHash 'a') 'e40c292c' 'hash of a'
         Assert-Equal (Get-PSProfileTextHash 'foobar') 'bf9cf968' 'hash of foobar'
-        $r = @(ConvertTo-PSProfileRoot @('\\example\team\Reports-2026', '\\example\team\Reports_2026', '\\Example\Team\reports-2026\', '\\example/team/Reports-2026/'))
-        Assert-Equal $r.Count 4 'roots'
+        $r = @(ConvertTo-PSProfileRoot @('\\example\team\Reports-2026', '\\example\team\Reports_2026', '\\Example\Team\reports-2026\', '\\example/team/Reports-2026/', '//example/team/Reports-2026'))
+        Assert-Equal $r.Count 5 'roots'
         Assert-True ($r[0].Base -ne $r[1].Base) "the sibling roots share the name '$($r[0].Base)'"
         Assert-Equal $r[2].Base $r[0].Base 'name for another case and a backslash at the end'
         Assert-Equal $r[3].Base $r[0].Base 'name for forward slashes'
         Assert-Equal $r[3].Unc '\\example\team\Reports-2026' 'root with forward slashes'
+        Assert-Equal $r[4].Base $r[0].Base 'name for a root with only forward slashes'
+        Assert-Equal $r[4].Sep '\' 'separator for a root with only forward slashes'
         Assert-True ((Split-Path -Leaf $r[0].Base) -cmatch '^idx3_[a-z0-9_]+_[0-9a-f]{8}$') "the name '$($r[0].Base)' does not have the form idx3_<name>_<hash>"
     }
 
