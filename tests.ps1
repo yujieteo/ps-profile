@@ -717,6 +717,107 @@ try {
         Assert-Equal (Get-Hex $file) (ConvertTo-Hex "Y`nY`nY`n") 'bytes'
     }
 
+    # These tests make the write of one file fail. They put a wrapper in place of a profile function and put the function back after.
+    # The wrapper reads its settings from one global variable, so that the names of the profile function cannot hide them.
+    function Set-WriteFault([string]$Target, [string]$Mode) {
+        $global:PSProfileTestFault = @{ Target = $Target; Mode = $Mode; Write = ${function:global:Write-PSProfileEncoded}; Copy = ${function:global:Copy-PSProfileBytes} }
+        Set-Item -LiteralPath 'Function:global:Write-PSProfileEncoded' -Value {
+            param([string]$Path, [string]$Text, [hashtable]$Source, [string]$Staged)
+            $fault = $global:PSProfileTestFault
+            if ($Path -eq $fault.Target) {
+                if ($fault.Mode -ne 'before') { Set-Content -LiteralPath $Path -Value 'partial' -NoNewline -Encoding Ascii }
+                throw 'test fault: the write failed'
+            }
+            & $fault.Write $Path $Text $Source $Staged
+        }
+        if ($Mode -eq 'stuck') {
+            Set-Item -LiteralPath 'Function:global:Copy-PSProfileBytes' -Value {
+                param([string]$From, [string]$To, [switch]$NoBom)
+                $fault = $global:PSProfileTestFault
+                if ($To -eq $fault.Target) { throw 'test fault: the restore failed' }
+                & $fault.Copy $From $To -NoBom:$NoBom
+            }
+        }
+    }
+
+    function Clear-WriteFault {
+        Set-Item -LiteralPath 'Function:global:Write-PSProfileEncoded' -Value $global:PSProfileTestFault.Write
+        Set-Item -LiteralPath 'Function:global:Copy-PSProfileBytes' -Value $global:PSProfileTestFault.Copy
+        Remove-Variable -Name PSProfileTestFault -Scope Global
+    }
+
+    function Invoke-FailedApply([string]$Mode, [string[]]$Files, [string]$Target) {
+        Set-WriteFault $Target $Mode
+        try { Invoke-Captured { sd alpha X $Files -Apply } } finally { Clear-WriteFault }
+    }
+
+    foreach ($c in @(
+            @{ Mode = 'before'; About = 'the write fails before it changes a byte' }
+            @{ Mode = 'partial'; About = 'the write changes some bytes and sd puts the original back' })) {
+        Test-Case ('a failed sd -Apply keeps the undo copies of the last run when {0}' -f $c.About) {
+            $dir = Join-Path $WorkDir ('sd-undo-keep-' + $c.Mode)
+            Add-File $dir 'a.txt' (ConvertTo-Hex "alpha`n")
+            Add-File $dir 'b.txt' (ConvertTo-Hex "alpha`n")
+            $a = Join-Path $dir 'a.txt'
+            $b = Join-Path $dir 'b.txt'
+            $run = Invoke-Captured { sd alpha X $a -Apply }
+            Assert-Quiet $run 'sd on a.txt'
+            $run = Invoke-FailedApply $c.Mode @($b) $b
+            Assert-Equal $run.Threw '' 'exception'
+            Assert-True (@($run.Info) -match 'changed 0 of 1').Count 'sd did not report 0 of 1 file(s) changed'
+            Assert-True (@($run.Warn) -match 'has its original text').Count 'sd did not say that b.txt has its original text'
+            Assert-Equal (Get-Hex $b) (ConvertTo-Hex "alpha`n") 'bytes of b.txt'
+            Assert-True (-not (Test-Path -LiteralPath "$UndoDir.prev")) 'sd-undo.prev stays after the run'
+            $undo = Invoke-Captured { sd-undo }
+            Assert-Quiet $undo 'sd-undo'
+            Assert-Equal (Get-Hex $a) (ConvertTo-Hex "alpha`n") 'bytes of a.txt after sd-undo'
+        }
+    }
+
+    Test-Case 'a failed sd -Apply keeps the copy of the original when sd cannot put the original back' {
+        $dir = Join-Path $WorkDir 'sd-undo-keep-stuck'
+        Add-File $dir 'a.txt' (ConvertTo-Hex "alpha`n")
+        Add-File $dir 'b.txt' (ConvertTo-Hex "alpha`n")
+        $a = Join-Path $dir 'a.txt'
+        $b = Join-Path $dir 'b.txt'
+        $run = Invoke-Captured { sd alpha X $a -Apply }
+        Assert-Quiet $run 'sd on a.txt'
+        $run = Invoke-FailedApply 'stuck' @($b) $b
+        Assert-Equal $run.Threw '' 'exception'
+        Assert-Equal (Get-Hex $b) (ConvertTo-Hex 'partial') 'bytes of b.txt'
+        $said = @($run.Warn | Where-Object { $_ -match "A copy of the original is at '([^']+)'" } | ForEach-Object { $Matches[1] })
+        Assert-Equal $said.Count 1 'warnings with the path of the copy'
+        Assert-True ($said[0].StartsWith($UndoDir)) "the copy is at '$($said[0])', not in the sd-undo folder"
+        Assert-Equal (Get-Hex $said[0]) (ConvertTo-Hex "alpha`n") 'bytes of the copy'
+        Assert-True (-not (Test-Path -LiteralPath "$UndoDir.prev")) 'sd-undo.prev stays after the run'
+        $lines = @(Get-Content -LiteralPath (Join-Path $UndoDir 'manifest.txt') -Encoding UTF8)
+        Assert-True (@($lines | Where-Object { $_.EndsWith("`t" + $b) }).Count) 'the list of files does not have b.txt'
+        $undo = Invoke-Captured { sd-undo }
+        Assert-Equal $undo.Threw '' 'exception'
+        Assert-True (@($undo.Warn) -match 'changed after sd ran').Count 'sd-undo did not skip b.txt'
+        Assert-Equal (Get-Hex $said[0]) (ConvertTo-Hex "alpha`n") 'bytes of the copy after sd-undo'
+    }
+
+    Test-Case 'when the first write of sd -Apply fails and a later write works, sd-undo restores the later file' {
+        $dir = Join-Path $WorkDir 'sd-undo-keep-later'
+        foreach ($f in 'a.txt', 'b.txt', 'c.txt') { Add-File $dir $f (ConvertTo-Hex "alpha`n") }
+        $a = Join-Path $dir 'a.txt'
+        $b = Join-Path $dir 'b.txt'
+        $c = Join-Path $dir 'c.txt'
+        $run = Invoke-Captured { sd alpha X $a -Apply }
+        Assert-Quiet $run 'sd on a.txt'
+        $run = Invoke-FailedApply 'before' @($b, $c) $b
+        Assert-Equal $run.Threw '' 'exception'
+        Assert-True (@($run.Info) -match 'changed 1 of 2').Count 'sd did not report 1 of 2 file(s) changed'
+        Assert-Equal (Get-Hex $c) (ConvertTo-Hex "X`n") 'bytes of c.txt'
+        Assert-True (-not (Test-Path -LiteralPath "$UndoDir.prev")) 'sd-undo.prev stays after the run'
+        $undo = Invoke-Captured { sd-undo }
+        Assert-Quiet $undo 'sd-undo'
+        Assert-Equal (Get-Hex $c) (ConvertTo-Hex "alpha`n") 'bytes of c.txt after sd-undo'
+        Assert-Equal (Get-Hex $b) (ConvertTo-Hex "alpha`n") 'bytes of b.txt after sd-undo'
+        Assert-Equal (Get-Hex $a) (ConvertTo-Hex "X`n") 'bytes of a.txt after sd-undo'
+    }
+
     Test-Case 'sd leaves a file alone when its encoding cannot hold the new text' {
         $dir = New-TextTree 'sd-encoding'
         $file = Join-Path $dir 'cp1252.txt'

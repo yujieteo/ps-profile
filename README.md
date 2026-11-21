@@ -107,11 +107,12 @@ The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creat
 - `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 - `share-roots.txt`: your share roots, if you create this file.
-- `sd-undo`: copies of the files that the last `sd -Apply` changed, and a list of them. The list has the hash of each file before and after the change. The next `sd -Apply` replaces them.
+- `sd-undo`: copies of the files that the last `sd -Apply` changed, and a list of them. The list has the hash of each file before and after the change. The next `sd -Apply` that changes a file replaces them. If a run changes no file, the copies of the last run stay.
+- `sd-undo.prev`: exists during an `sd -Apply` run until the run changes a file. It holds the copies of the last run. If the run changes no file, they go back to `sd-undo`.
 
 When `rg -Office`, `bat`, `delta` or the preview reads an Office file, it unpacks the file in a temporary folder under `$env:TEMP`. The profile deletes this folder after the search.
 
-`sd -Apply` writes temporary copies to `$env:TEMP` and deletes them after each file. It saves the copy of the original in the `sd-undo` folder before it changes the file. Then it writes the new text to the file in place, so the file keeps its permissions. If a write fails, `sd` puts the original back. If it cannot, it shows the path of the copy.
+`sd -Apply` writes temporary copies to `$env:TEMP` and deletes them after each file. It saves the copy of the original in the `sd-undo` folder before it changes the file. Then it writes the new text to the file in place, so the file keeps its permissions. If a write fails, `sd` puts the original back. If it cannot, it shows the path of the copy, and `sd-undo` keeps the copy.
 
 ## ConstrainedLanguage limits
 
