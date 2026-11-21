@@ -102,9 +102,9 @@ The profile sets the default encoding of `Out-File`, `Set-Content`, `Add-Content
 
 The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creates this folder at startup. The folder contains:
 
-- `idx2_*.idx` and `idx2_*.state`: the file index for each share root.
+- `idx3_*.idx` and `idx3_*.state`: the file index for each share root. The name has the root in lower case and a hash of it. Thus two different roots get their own index, and two spellings of one root, for example in another case, use the same index.
 - `index.lock`: exists only while an index build runs.
-- `idx2_*.partial`: exists while an index build runs. The index is `old` until the build ends.
+- `idx3_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
 - `share-roots.txt`: your share roots, if you create this file.
 - `sd-undo`: copies of the files that the last `sd -Apply` changed, and a list of them. The list has the hash of each file before and after the change. The next `sd -Apply` that changes a file replaces them. If a run changes no file, the copies of the last run stay.
