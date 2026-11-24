@@ -770,6 +770,24 @@ function global:Test-PSProfilePipedPath {
     try { return (Test-Path -LiteralPath $Text -ErrorAction Stop) } catch { return $false }
 }
 
+# The files that rg and sd read for one path: the file itself, or the files under a folder.
+# Each item has File, the file, and Rel, the path under the folder with forward slashes.
+# Rel is the name of a file that the user gives. Under a folder, Rel is empty unless -WithRel is given.
+function global:Get-PSProfileFileWalk {
+    param([string]$Command, [string]$Path, [string]$Refusal, [switch]$Hidden, [switch]$NoIgnore, [switch]$WithRel)
+    $full = Get-PSProfileFullPath $Path
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+    if (-not $item) { Write-Error "${Command}: '$Path' not found."; return }
+    if (-not $item.PSIsContainer) { @{ File = $item; Rel = $item.Name }; return }
+    if (Test-PSProfileWholeShare $full) { Write-Error ("${Command}: " + ($Refusal -f $full) + ' Give a folder or pipe fd results.'); return }
+    $top = $full.TrimEnd('\', '/').Length + 1
+    Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
+        $rel = ''
+        if ($WithRel) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
+        @{ File = $_; Rel = $rel }
+    }
+}
+
 function global:rg {
     [CmdletBinding()]
     param(
@@ -876,20 +894,8 @@ function global:rg {
         }
         $searchPath = {
             param($p)
-            $full = Get-PSProfileFullPath $p
-            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-            if (-not $item) { Write-Error "rg: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $search $item $item.Name; return }
-            if (Test-PSProfileWholeShare $full) {
-                Write-Error "rg: refusing a whole-share content search of '$full'. Give a folder or pipe fd results."
-                return
-            }
-            $top = $full.TrimEnd('\', '/').Length + 1
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
-                $rel = ''
-                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
-                & $search $_ $rel
-            }
+            Get-PSProfileFileWalk -Command 'rg' -Path $p -Refusal "refusing a whole-share content search of '{0}'." -Hidden:$Hidden -NoIgnore:$NoIgnore -WithRel:($globRules.Count -gt 0) |
+                ForEach-Object { & $search $_.File $_.Rel }
         }
         $piped = @{}
         $searchText = {
@@ -1780,17 +1786,8 @@ function global:sd {
         }
         $editPath = {
             param($p)
-            $full = Get-PSProfileFullPath $p
-            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-            if (-not $item) { Write-Error "sd: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $edit $item $item.Name; return }
-            if (Test-PSProfileWholeShare $full) { Write-Error "sd: refusing to change a whole share at '$full'. Give a folder or pipe fd results."; return }
-            $top = $full.TrimEnd('\', '/').Length + 1
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
-                $rel = ''
-                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
-                & $edit $_ $rel
-            }
+            Get-PSProfileFileWalk -Command 'sd' -Path $p -Refusal "refusing to change a whole share at '{0}'." -Hidden:$Hidden -NoIgnore:$NoIgnore -WithRel:($globRules.Count -gt 0) |
+                ForEach-Object { & $edit $_.File $_.Rel }
         }
     }
     process {
