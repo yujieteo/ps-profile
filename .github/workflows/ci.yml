@@ -40,6 +40,10 @@ jobs:
           nix shell nixpkgs#powershell nixpkgs#fd nixpkgs#ripgrep nixpkgs#sd \
             -c pwsh -NoProfile -File tests.ps1 -WorkDir "$RUNNER_TEMP/ps-profile-tests" \
             | tee "$RUNNER_TEMP/tests.out"
+      # The type and method check needs FullLanguage mode, so it runs apart from tests.ps1.
+      # It fails when the profile uses a type, method or command that ConstrainedLanguage mode does not permit.
+      - name: Run tests/check-types.ps1
+        run: nix shell nixpkgs#powershell -c pwsh -NoProfile -File tests/check-types.ps1
       # tests.ps1 skips a test, and still passes, when a tool is missing.
       # This step makes sure that all four tools were found and that only the
       # Windows test was skipped, so a missing tool cannot pass in silence.
