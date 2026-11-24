@@ -770,6 +770,24 @@ function global:Test-PSProfilePipedPath {
     try { return (Test-Path -LiteralPath $Text -ErrorAction Stop) } catch { return $false }
 }
 
+# The files that rg and sd read for one path: the file itself, or the files under a folder.
+# Each item has File, the file, and Rel, the path under the folder with forward slashes.
+# Rel is the name of a file that the user gives. Under a folder, Rel is empty unless -WithRel is given.
+function global:Get-PSProfileFileWalk {
+    param([string]$Command, [string]$Path, [string]$Refusal, [switch]$Hidden, [switch]$NoIgnore, [switch]$WithRel)
+    $full = Get-PSProfileFullPath $Path
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+    if (-not $item) { Write-Error "${Command}: '$Path' not found."; return }
+    if (-not $item.PSIsContainer) { @{ File = $item; Rel = $item.Name }; return }
+    if (Test-PSProfileWholeShare $full) { Write-Error ("${Command}: " + ($Refusal -f $full) + ' Give a folder or pipe fd results.'); return }
+    $top = $full.TrimEnd('\', '/').Length + 1
+    Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
+        $rel = ''
+        if ($WithRel) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
+        @{ File = $_; Rel = $rel }
+    }
+}
+
 function global:rg {
     [CmdletBinding()]
     param(
@@ -794,16 +812,12 @@ function global:rg {
     )
     begin {
         $toHost = Test-PSProfileToHost $MyInvocation
-        $rx = $Pattern
-        if ($SimpleMatch) { $rx = [regex]::Escape($Pattern) }
-        if ($Word) { $rx = '\b(?:' + $rx + ')\b' }
-        $invalid = $false
-        try { $null = '' -match $rx } catch {
-            $invalid = $true
-            Write-Error "rg: '$Pattern' is not a valid pattern. Use -F for plain text."
-        }
+        $r = Get-PSProfileReplacer -Command 'rg' -Pattern $Pattern -Replacement '' -IgnoreCase:$IgnoreCase -CaseSensitive:$CaseSensitive -SimpleMatch:$SimpleMatch -Word:$Word
+        $invalid = -not $r
+        $rx = ''
+        $ignore = $false
+        if ($r) { $rx = $r.Rx; $ignore = -not $r.Case }
         $globRules = @(foreach ($g in $Glob) { if ($g) { ConvertTo-PSProfileIgnoreRule $g '' } })
-        $ignore = $IgnoreCase -or (-not $CaseSensitive -and -not (Test-PSProfileUpper $Pattern))
         $selectArgs = @{ Pattern = $rx; CaseSensitive = (-not $ignore) }
         if ($InvertMatch) { $selectArgs.NotMatch = $true } else { $selectArgs.AllMatches = $true }
         $pre = $Context
@@ -880,20 +894,8 @@ function global:rg {
         }
         $searchPath = {
             param($p)
-            $full = Get-PSProfileFullPath $p
-            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-            if (-not $item) { Write-Error "rg: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $search $item $item.Name; return }
-            if (Test-PSProfileWholeShare $full) {
-                Write-Error "rg: refusing a whole-share content search of '$full'. Give a folder or pipe fd results."
-                return
-            }
-            $top = $full.TrimEnd('\', '/').Length + 1
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
-                $rel = ''
-                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
-                & $search $_ $rel
-            }
+            Get-PSProfileFileWalk -Command 'rg' -Path $p -Refusal "refusing a whole-share content search of '{0}'." -Hidden:$Hidden -NoIgnore:$NoIgnore -WithRel:($globRules.Count -gt 0) |
+                ForEach-Object { & $search $_.File $_.Rel }
         }
         $piped = @{}
         $searchText = {
@@ -1784,17 +1786,8 @@ function global:sd {
         }
         $editPath = {
             param($p)
-            $full = Get-PSProfileFullPath $p
-            $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-            if (-not $item) { Write-Error "sd: '$p' not found."; return }
-            if (-not $item.PSIsContainer) { & $edit $item $item.Name; return }
-            if (Test-PSProfileWholeShare $full) { Write-Error "sd: refusing to change a whole share at '$full'. Give a folder or pipe fd results."; return }
-            $top = $full.TrimEnd('\', '/').Length + 1
-            Get-PSProfileTree $full -SkipHidden:(-not $Hidden) -UseIgnore:(-not $NoIgnore) | Where-Object { -not ([int]$_.Attributes -band 16) } | ForEach-Object {
-                $rel = ''
-                if ($globRules.Count) { $rel = $_.FullName.Substring($top) -replace '\\', '/' }
-                & $edit $_ $rel
-            }
+            Get-PSProfileFileWalk -Command 'sd' -Path $p -Refusal "refusing to change a whole share at '{0}'." -Hidden:$Hidden -NoIgnore:$NoIgnore -WithRel:($globRules.Count -gt 0) |
+                ForEach-Object { & $edit $_.File $_.Rel }
         }
     }
     process {
@@ -2099,6 +2092,10 @@ $global:PSProfileTldr = [ordered]@{
                      'cd -  # Go back to the previous folder'
     'up'           = 'Go to a parent folder. .. and ... go up one and two levels.',
                      'up 3  # Go up three levels'
+    '..'           = 'Go to the parent folder.',
+                     '..  # Go up one level'
+    '...'          = 'Go to the parent of the parent folder.',
+                     '...  # Go up two levels'
     'mkcd'         = 'Create a folder and enter it.',
                      'mkcd reports\2026  # Create the folders and enter the last one'
     'ls'           = 'List files. Colors show the file type.',
