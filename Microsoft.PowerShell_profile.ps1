@@ -794,16 +794,12 @@ function global:rg {
     )
     begin {
         $toHost = Test-PSProfileToHost $MyInvocation
-        $rx = $Pattern
-        if ($SimpleMatch) { $rx = [regex]::Escape($Pattern) }
-        if ($Word) { $rx = '\b(?:' + $rx + ')\b' }
-        $invalid = $false
-        try { $null = '' -match $rx } catch {
-            $invalid = $true
-            Write-Error "rg: '$Pattern' is not a valid pattern. Use -F for plain text."
-        }
+        $r = Get-PSProfileReplacer -Command 'rg' -Pattern $Pattern -Replacement '' -IgnoreCase:$IgnoreCase -CaseSensitive:$CaseSensitive -SimpleMatch:$SimpleMatch -Word:$Word
+        $invalid = -not $r
+        $rx = ''
+        $ignore = $false
+        if ($r) { $rx = $r.Rx; $ignore = -not $r.Case }
         $globRules = @(foreach ($g in $Glob) { if ($g) { ConvertTo-PSProfileIgnoreRule $g '' } })
-        $ignore = $IgnoreCase -or (-not $CaseSensitive -and -not (Test-PSProfileUpper $Pattern))
         $selectArgs = @{ Pattern = $rx; CaseSensitive = (-not $ignore) }
         if ($InvertMatch) { $selectArgs.NotMatch = $true } else { $selectArgs.AllMatches = $true }
         $pre = $Context
