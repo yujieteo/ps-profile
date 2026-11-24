@@ -9,7 +9,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The `rnm` page of `tldr` and the README show `-H` (`-Hidden`) and `-u` (`-NoIgnore`).
+- The README shows the `-Keep` option of `tests.ps1`.
 - `tldr ..` and `tldr ...` show a page. Before, the README listed these commands, but `tldr` had no page for them.
+
+### Changed
+
+- `$PSProfileVersion` and `doctor` show `2.1.0-dev` for the code on the default branch. Before, they showed `2.0.0`, but the code had changes after 2.0.0.
+- The summary of `sd -Apply` gives the number of files that it could not write. Before, it gave only the number of changed files.
 
 ### Fixed
 
