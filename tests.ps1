@@ -10,43 +10,8 @@ if (Test-Path -LiteralPath Variable:global:PSProfileVersion) {
     exit 2
 }
 
-$GateProblems = $null
+# The type and method check is in tests/check-types.ps1. It needs FullLanguage mode.
 if ("$($ExecutionContext.SessionState.LanguageMode)" -eq 'FullLanguage') {
-    $allowedTypes = @(
-        'adsi', 'adsisearcher', 'array', 'bigint', 'bool', 'byte', 'char', 'cimclass', 'cimconverter', 'ciminstance', 'cimsession', 'cimtype',
-        'cultureinfo', 'datetime', 'decimal', 'double', 'float', 'guid', 'hashtable', 'int', 'int16', 'int32', 'int64', 'ipaddress', 'ipendpoint',
-        'long', 'mailaddress', 'nullstring', 'object', 'objectsecurity', 'ordered', 'physicaladdress', 'pscredential', 'pscustomobject',
-        'pslistmodifier', 'psobject', 'psprimitivedictionary', 'regex', 'sbyte', 'securestring', 'single', 'string', 'switch', 'timespan',
-        'uint16', 'uint32', 'uint64', 'uri', 'version', 'void', 'wildcardpattern', 'wmi', 'wmiclass', 'wmisearcher', 'x500distinguishedname',
-        'x509certificate', 'xml'
-    )
-    $allowedMethods = @(
-        'Substring', 'ToLower', 'ToUpper', 'StartsWith', 'EndsWith', 'Trim', 'TrimEnd', 'TrimStart', 'Split', 'IndexOf', 'LastIndexOf',
-        'PadRight', 'PadLeft', 'Contains', 'ToCharArray', 'Replace', 'Insert', 'ContainsKey', 'Remove', 'Clone', 'Add', 'AddDays', 'AddHours',
-        'AddMinutes', 'AddSeconds', 'ToUniversalTime', 'ToLocalTime', 'ToString', 'Match', 'Matches', 'IsMatch', 'Equals', 'CompareTo'
-    )
-    $gateTokens = $null
-    $gateErrors = $null
-    $gateAst = [System.Management.Automation.Language.Parser]::ParseFile($ProfilePath, [ref]$gateTokens, [ref]$gateErrors)
-    $GateProblems = @(
-        foreach ($e in $gateErrors) { 'line {0}: parse error: {1}' -f $e.Extent.StartLineNumber, $e.Message }
-        foreach ($n in $gateAst.FindAll({ param($x) $true }, $true)) {
-            $kind = $n.GetType().Name
-            if ($kind -eq 'TypeExpressionAst' -or $kind -eq 'TypeConstraintAst') {
-                $name = ($n.TypeName.FullName -replace '\[\]$', '' -replace '^System\.', '').ToLower()
-                if ($allowedTypes -notcontains $name) { 'line {0}: [{1}] is not an allowed type' -f $n.Extent.StartLineNumber, $n.TypeName.FullName }
-            } elseif ($kind -eq 'InvokeMemberExpressionAst' -and -not $n.Static) {
-                $member = "$($n.Member.Extent.Text)"
-                if ($allowedMethods -notcontains $member) { 'line {0}: .{1}() is not a string, hashtable, date or regex method' -f $n.Extent.StartLineNumber, $member }
-            } elseif ($kind -eq 'CommandAst') {
-                $command = "$($n.GetCommandName())"
-                if ($command -match '^(Add-Type|Invoke-Expression|iex)$') { 'line {0}: {1} is not permitted' -f $n.Extent.StartLineNumber, $command }
-                if ($command -eq 'New-Object' -and ($n.Extent.Text -match '-ComObject' -or $n.Extent.Text -notmatch '^New-Object\s+(PSObject|DateTime)\b')) {
-                    'line {0}: New-Object makes a type that is not PSObject or DateTime' -f $n.Extent.StartLineNumber
-                }
-            }
-        }
-    )
     $ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'
 }
 
@@ -212,11 +177,6 @@ try {
 
     Test-Case 'the profile loads without an error' {
         Assert-Equal ($loadErrors -join ' | ') '' 'errors at load'
-    }
-
-    Test-Case 'the profile uses only the types and methods that ConstrainedLanguage mode permits' {
-        if ($null -eq $GateProblems) { throw 'SKIP: the check reads the profile with the PowerShell parser, which needs FullLanguage mode at the start' }
-        Assert-Equal ($GateProblems -join ' | ') '' 'problems'
     }
 
     $IgnoreCases = @(
