@@ -15,6 +15,11 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -eq 'FullLanguage') {
     $ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'
 }
 
+# The README and the CHANGELOG are read from the folder of the profile, so that a profile from another place is compared with its own files.
+$DocDir = ''
+$resolvedProfile = Resolve-Path -LiteralPath $ProfilePath -ErrorAction SilentlyContinue
+if ($resolvedProfile) { $DocDir = Split-Path -Parent $resolvedProfile.ProviderPath }
+
 $OnWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
 if ($PSVersionTable.PSVersion.Major -lt 6) { $ByteArgs = @{ Encoding = 'Byte' } } else { $ByteArgs = @{ AsByteStream = $true } }
 $E9 = [string][char]0xE9
@@ -183,7 +188,10 @@ try {
         $first = @(Get-Content -LiteralPath $ProfilePath -TotalCount 1 -Encoding UTF8)[0]
         Assert-True ($first -match "^\`$global:PSProfileVersion = '(\d+\.\d+\.\d+)'$") "line 1 of the profile does not set the version: $first"
         $version = $Matches[1]
-        $readme = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8)
+        if (-not $DocDir -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'README.md')) -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'CHANGELOG.md'))) {
+            throw 'SKIP: the folder of the profile has no README.md and CHANGELOG.md'
+        }
+        $readme = @(Get-Content -LiteralPath (Join-Path $DocDir 'README.md') -Encoding UTF8)
         $install = @($readme | Where-Object { $_ -match 'releases/download/v' })
         Assert-Equal $install.Count 1 'README lines with a download link'
         Assert-True ($install[0] -match 'version (\d+\.\d+\.\d+)\]\(https://[^)]*/releases/download/v(\d+\.\d+\.\d+)/') "the download line has no version: $($install[0])"
@@ -193,7 +201,7 @@ try {
         Assert-Equal $current.Count 1 'README lines with the current version'
         Assert-True ($current[0] -match '^The current version is (\d+\.\d+\.\d+)\.') "the line has no version: $($current[0])"
         Assert-Equal $Matches[1] $version 'current version in the README'
-        $heading = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'CHANGELOG.md') -Encoding UTF8 | Where-Object { $_ -match '^## \[\d+\.\d+\.\d+\]' } | Select-Object -First 1)
+        $heading = @(Get-Content -LiteralPath (Join-Path $DocDir 'CHANGELOG.md') -Encoding UTF8 | Where-Object { $_ -match '^## \[\d+\.\d+\.\d+\]' } | Select-Object -First 1)
         Assert-True ($heading.Count -and $heading[0] -match '^## \[(\d+\.\d+\.\d+)\]') 'CHANGELOG.md has no version heading'
         Assert-Equal $Matches[1] $version 'newest version heading in CHANGELOG.md'
     }
@@ -534,7 +542,8 @@ try {
         try {
             $global:PSProfileDataDir = $data
             $global:ShareRoots = @($one, $two)
-            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
+            # On Windows, a temporary folder with a drive letter gives a warning that is not about the test.
+            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots 3>$null)
             $global:PSProfileIndexCache = @{}
             $list = Get-PSProfileRootList $global:PSProfileRoots
             # The same arguments as the job that the profile starts at load: no pause, and skip an index of less than 24 hours.
@@ -571,7 +580,8 @@ try {
         $kept = @{ ShareRoots = $global:ShareRoots; Roots = $global:PSProfileRoots }
         try {
             $global:ShareRoots = @($share)
-            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
+            # On Windows, a temporary folder with a drive letter gives a warning that is not about the test.
+            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots 3>$null)
             foreach ($c in @(
                     @{ Name = 'rg'; Run = { rg alpha $share } }
                     @{ Name = 'sd'; Run = { sd alpha X $share -Apply } }
@@ -1109,7 +1119,8 @@ try {
             if (-not (Get-Command -Name $k -ErrorAction SilentlyContinue)) { $k }
         })
         Assert-Equal ($notCommands -join ', ') '' 'tldr pages that are not commands'
-        $readme = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8)
+        if (-not $DocDir -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'README.md'))) { throw 'SKIP: the folder of the profile has no README.md' }
+        $readme = @(Get-Content -LiteralPath (Join-Path $DocDir 'README.md') -Encoding UTF8)
         $start = [array]::IndexOf($readme, '## What it does')
         Assert-True ($start -ge 0) 'the README has no section What it does'
         $names = @(for ($i = $start + 1; $i -lt $readme.Count -and -not $readme[$i].StartsWith('## '); $i++) {

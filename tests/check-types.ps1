@@ -8,7 +8,12 @@ param(
 # Exit code 0: no problem. Exit code 1: one or more problems. Exit code 2: the check cannot run.
 
 if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
-    Write-Output "The check needs FullLanguage mode, and this session is in $($ExecutionContext.SessionState.LanguageMode) mode. Run it on a computer without that policy, for example: pwsh -NoProfile -File tests/check-types.ps1"
+    Write-Output "The check needs FullLanguage mode, and this session is in $($ExecutionContext.SessionState.LanguageMode) mode. Run it on a computer without that policy, for example: pwsh -NoProfile -File tests/check-types.ps1, or powershell -NoProfile -File tests\check-types.ps1 where no policy sets ConstrainedLanguage mode"
+    exit 2
+}
+
+if (-not (Test-Path -LiteralPath $ProfilePath -PathType Leaf)) {
+    Write-Output "The check cannot run: '$ProfilePath' is not a file."
     exit 2
 }
 
