@@ -584,6 +584,32 @@ try {
         }
     }
 
+    Test-Case 'rg, sd -Apply and rnm -r -Apply refuse a whole share root with one error, no output and no change' {
+        $share = Join-Path $WorkDir 'whole-share'
+        Add-File $share 'a.txt' (ConvertTo-Hex "alpha`n")
+        Add-File $share 'sub/b.txt' (ConvertTo-Hex "alpha`n")
+        $before = Get-State $share -Time
+        $kept = @{ ShareRoots = $global:ShareRoots; Roots = $global:PSProfileRoots }
+        try {
+            $global:ShareRoots = @($share)
+            $global:PSProfileRoots = @(ConvertTo-PSProfileRoot $global:ShareRoots)
+            foreach ($c in @(
+                    @{ Name = 'rg'; Run = { rg alpha $share } }
+                    @{ Name = 'sd'; Run = { sd alpha X $share -Apply } }
+                    @{ Name = 'rnm'; Run = { rnm '^a' 'z' $share -r -Apply } })) {
+                $run = Invoke-Captured $c.Run
+                Assert-Equal $run.Threw '' "exception from $($c.Name)"
+                Assert-Equal $run.Err.Count 1 "errors from $($c.Name)"
+                Assert-True ($run.Err[0] -match 'refusing') "the error from $($c.Name) is not the refusal: $($run.Err[0])"
+                Assert-Equal $run.Out.Count 0 "output items from $($c.Name)"
+                Assert-Same (Get-State $share -Time) $before "files after $($c.Name)"
+            }
+        } finally {
+            $global:ShareRoots = $kept.ShareRoots
+            $global:PSProfileRoots = $kept.Roots
+        }
+    }
+
     Test-Case 'sd without -Apply changes no byte and no file time' {
         $dir = New-TextTree 'sd-preview'
         $before = Get-State $dir -Time
