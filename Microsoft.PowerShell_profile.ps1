@@ -2099,6 +2099,10 @@ $global:PSProfileTldr = [ordered]@{
                      'cd -  # Go back to the previous folder'
     'up'           = 'Go to a parent folder. .. and ... go up one and two levels.',
                      'up 3  # Go up three levels'
+    '..'           = 'Go to the parent folder.',
+                     '..  # Go up one level'
+    '...'          = 'Go to the parent of the parent folder.',
+                     '...  # Go up two levels'
     'mkcd'         = 'Create a folder and enter it.',
                      'mkcd reports\2026  # Create the folders and enter the last one'
     'ls'           = 'List files. Colors show the file type.',

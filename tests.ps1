@@ -1043,6 +1043,112 @@ try {
         Assert-Quiet $run 'rnm'
         Assert-True (Test-Path -LiteralPath (Join-Path $deep 'long-final.txt')) 'rnm did not rename the file'
     }
+
+    Test-Case 'recent lists the newest files of the last days, and skips old, hidden and ignored files' {
+        $dir = Join-Path $WorkDir 'recent'
+        foreach ($f in 'new1.txt', 'sub/new2.txt', 'old.txt', '.hid.txt', 'ign.txt') { Add-File $dir $f (ConvertTo-Hex "x`n") }
+        Add-File $dir '.gitignore' (ConvertTo-Hex "ign.txt`n")
+        New-Item -ItemType Directory -Path (Join-Path $dir '.git') -Force | Out-Null
+        $now = Get-Date
+        foreach ($t in @(@('new1.txt', 1), @('sub/new2.txt', 2), @('old.txt', 720), @('.hid.txt', 1), @('ign.txt', 1))) {
+            Set-ItemProperty -LiteralPath (Join-Rel $dir $t[0]) -Name LastWriteTime -Value $now.AddHours(- $t[1])
+        }
+        $run = Invoke-Captured { recent $dir }
+        Assert-Quiet $run 'recent'
+        Assert-Equal (@($run.Out | ForEach-Object { ConvertTo-Rel $dir "$_" }) -join ', ') 'new1.txt, sub/new2.txt' 'files, newest first'
+        $run = Invoke-Captured { recent $dir -Count 1 }
+        Assert-Quiet $run 'recent -Count 1'
+        Assert-Equal (@($run.Out | ForEach-Object { ConvertTo-Rel $dir "$_" }) -join ', ') 'new1.txt' 'files with -Count 1'
+        $run = Invoke-Captured { recent $dir -Days 60 }
+        Assert-Quiet $run 'recent -Days 60'
+        Assert-Equal (@($run.Out | ForEach-Object { ConvertTo-Rel $dir "$_" }) -join ', ') 'new1.txt, sub/new2.txt, old.txt' 'files with -Days 60'
+    }
+
+    Test-Case 'bat gives the lines of a file, and -Range gives some lines' {
+        $file = Join-Path $WorkDir 'bat.txt'
+        Add-File $WorkDir 'bat.txt' (ConvertTo-Hex "one`r`ntwo`nthree`nfour")
+        $run = Invoke-Captured { bat $file }
+        Assert-Quiet $run 'bat'
+        Assert-Equal ($run.Out -join '|') 'one|two|three|four' 'lines'
+        $run = Invoke-Captured { bat $file -Range 2-3 }
+        Assert-Quiet $run 'bat -Range'
+        Assert-Equal ($run.Out -join '|') 'two|three' 'lines with -Range 2-3'
+        $run = Invoke-Captured { bat (Join-Path $WorkDir 'no-such-file.txt') }
+        Assert-Equal $run.Err.Count 1 'errors for a file that does not exist'
+    }
+
+    Test-Case 'delta gives a unified diff of two files, and nothing for equal files' {
+        Add-File $WorkDir 'delta-a.txt' (ConvertTo-Hex "a`nb`nc`n")
+        Add-File $WorkDir 'delta-b.txt' (ConvertTo-Hex "a`nB`nc`n")
+        $a = Join-Path $WorkDir 'delta-a.txt'
+        $b = Join-Path $WorkDir 'delta-b.txt'
+        $run = Invoke-Captured { delta $a $b }
+        Assert-Quiet $run 'delta'
+        Assert-Equal ($run.Out -join '|') "--- $a|+++ $b|@@ -1,3 +1,3 @@| a|-b|+B| c" 'diff'
+        $run = Invoke-Captured { delta $a $a }
+        Assert-Quiet $run 'delta of a file with itself'
+        Assert-Equal $run.Out.Count 0 'lines for equal files'
+    }
+
+    Test-Case 'tldr lists the pages, shows one page, and gives one error for a name with no page' {
+        $run = Invoke-Captured { tldr }
+        Assert-Quiet $run 'tldr'
+        Assert-Equal $run.Out.Count $global:PSProfileTldr.Count 'lines in the list'
+        Assert-True ($run.Out[0] -match '^fd\s+Find files by name') "the first line is: $($run.Out[0])"
+        $run = Invoke-Captured { tldr fd }
+        Assert-Quiet $run 'tldr fd'
+        Assert-Equal $run.Out[0] $global:PSProfileTldr['fd'][0] 'first line of the page'
+        Assert-True ($run.Out -contains '    fd report') 'the page does not show the example fd report'
+        $run = Invoke-Captured { tldr no-such-page }
+        Assert-Equal $run.Err.Count 1 'errors for a name with no page'
+    }
+
+    Test-Case 'each tldr page is a command or a key, and each command in the README table has a tldr page' {
+        $notCommands = @(foreach ($k in $global:PSProfileTldr.Keys) {
+            if ($global:PSProfileTldr[$k][0] -like 'Key. *') { continue }
+            if (-not (Get-Command -Name $k -ErrorAction SilentlyContinue)) { $k }
+        })
+        Assert-Equal ($notCommands -join ', ') '' 'tldr pages that are not commands'
+        $readme = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8)
+        $start = [array]::IndexOf($readme, '## What it does')
+        Assert-True ($start -ge 0) 'the README has no section What it does'
+        $names = @(for ($i = $start + 1; $i -lt $readme.Count -and -not $readme[$i].StartsWith('## '); $i++) {
+            if ($readme[$i] -match '^\| `') {
+                foreach ($m in [regex]::Matches($readme[$i].Split('|')[1], '`([^`]+)`')) { $m.Groups[1].Value }
+            }
+        })
+        Assert-True ($names.Count -ge 20) "the README table has only $($names.Count) command(s)"
+        Assert-Equal (@($names | Where-Object { -not $global:PSProfileTldr.Contains($_) }) -join ', ') '' 'README commands with no tldr page'
+    }
+
+    Test-Case 'z goes to the best folder of the history, and zi goes to the folder that the picker gives' {
+        $one = Join-Path $WorkDir 'zjump-alpha'
+        $two = Join-Path $WorkDir 'zjump-beta'
+        New-Item -ItemType Directory -Path $one, $two -Force | Out-Null
+        Add-PSProfileZ $one
+        Add-PSProfileZ $two
+        Add-PSProfileZ $two
+        Push-Location -LiteralPath $WorkDir
+        try {
+            $run = Invoke-Captured { z zjump }
+            Assert-Quiet $run 'z'
+            Assert-Equal (Get-Location).ProviderPath $two 'folder after z zjump'
+            $run = Invoke-Captured { z zjump alpha }
+            Assert-Quiet $run 'z with two words'
+            Assert-Equal (Get-Location).ProviderPath $one 'folder after z zjump alpha'
+            Set-Location -LiteralPath $WorkDir
+            $run = Invoke-Captured { z no-such-folder-name }
+            Assert-Equal $run.Warn.Count 1 'warnings for a name with no match'
+            Assert-Equal (Get-Location).ProviderPath $WorkDir 'folder after z with no match'
+            # zi asks with Read-Host. A function with the same name answers in place of the person.
+            Set-Item -LiteralPath 'Function:global:Read-Host' -Value { '#1' }
+            try { $run = Invoke-Captured { zi zjump alpha } } finally { Remove-Item -LiteralPath 'Function:global:Read-Host' }
+            Assert-Quiet $run 'zi'
+            Assert-Equal (Get-Location).ProviderPath $one 'folder after zi zjump alpha'
+        } finally {
+            Pop-Location
+        }
+    }
 } finally {
     foreach ($k in $saved.Keys) { Set-Item -LiteralPath "Env:$k" -Value $saved[$k] }
     if (-not $Keep) { Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue }

@@ -7,6 +7,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `tldr ..` and `tldr ...` show a page. Before, the README listed these commands, but `tldr` had no page for them.
+
 ### Fixed
 
 - A failed `sd -Apply` keeps the undo copies of the last run when it changes no file. Before, the first write deleted them before it tried to change the file, so `sd-undo` could not restore the last run.
