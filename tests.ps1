@@ -179,6 +179,25 @@ try {
         Assert-Equal ($loadErrors -join ' | ') '' 'errors at load'
     }
 
+    Test-Case 'the version in line 1 of the profile is the version in the README and the newest CHANGELOG heading' {
+        $first = @(Get-Content -LiteralPath $ProfilePath -TotalCount 1 -Encoding UTF8)[0]
+        Assert-True ($first -match "^\`$global:PSProfileVersion = '(\d+\.\d+\.\d+)'$") "line 1 of the profile does not set the version: $first"
+        $version = $Matches[1]
+        $readme = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8)
+        $install = @($readme | Where-Object { $_ -match 'releases/download/v' })
+        Assert-Equal $install.Count 1 'README lines with a download link'
+        Assert-True ($install[0] -match 'version (\d+\.\d+\.\d+)\]\(https://[^)]*/releases/download/v(\d+\.\d+\.\d+)/') "the download line has no version: $($install[0])"
+        Assert-Equal $Matches[1] $version 'version in the text of the download link'
+        Assert-Equal $Matches[2] $version 'version in the download link'
+        $current = @($readme | Where-Object { $_ -match '^The current version is ' })
+        Assert-Equal $current.Count 1 'README lines with the current version'
+        Assert-True ($current[0] -match '^The current version is (\d+\.\d+\.\d+)\.') "the line has no version: $($current[0])"
+        Assert-Equal $Matches[1] $version 'current version in the README'
+        $heading = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'CHANGELOG.md') -Encoding UTF8 | Where-Object { $_ -match '^## \[\d+\.\d+\.\d+\]' } | Select-Object -First 1)
+        Assert-True ($heading.Count -and $heading[0] -match '^## \[(\d+\.\d+\.\d+)\]') 'CHANGELOG.md has no version heading'
+        Assert-Equal $Matches[1] $version 'newest version heading in CHANGELOG.md'
+    }
+
     $IgnoreCases = @(
         @{ Dir = 'c01-basic'; About = 'a name pattern matches at every level'; Lines = @('*.log')
             Files = @('YYYY a.txt', '.... a.log', '.... sub/b.log', 'YYYY sub/b.txt') }
