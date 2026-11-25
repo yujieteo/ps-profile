@@ -9,7 +9,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The `rnm` page of `tldr` and the README show `-H` (`-Hidden`) and `-u` (`-NoIgnore`).
+- The README shows the `-Keep` option of `tests.ps1`.
 - `tldr ..` and `tldr ...` show a page. Before, the README listed these commands, but `tldr` had no page for them.
+
+### Changed
+
+- Between releases, the version in line 1 of the profile has `-dev`, for example `2.1.0-dev`, so `$PSProfileVersion` and `doctor` do not show a released version for code that is not released. Before, the default branch showed `2.0.0`, but it had changes after 2.0.0.
+- The summary of `sd -Apply` gives the number of files that it could not write. Before, it gave only the number of changed files.
+
+### Removed
+
+- The picker of `fzf` no longer uses the `Display` property of an object. Only `br` used it, and 2.0.0 removed `br`. An object with a `Display` property shows its `FullName` or its text, as other objects do.
 
 ### Fixed
 

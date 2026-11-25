@@ -16,7 +16,7 @@ The profile adds these commands:
 |---|---|
 | `fd` | Find files by name, with colors. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-e` for extensions, `-t f` or `-t d` for the type, `-Changed` (for example `30d`) and `-Size` (for example `+1MB`) to filter. Hidden files and dot files show only with `-H`. In a Git repository, files that `.gitignore` ignores show only with `-I`. Uses the file index for folders under `ShareRoots`. |
 | `recent` | Show the 20 most recently changed files of the last 7 days under the current folder. Use `-Days` and `-Count` to change the limits. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. |
-| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Use `-g` to search only the files that match a glob, for example `-g *.txt` or `-g src/**`. Use `-g !*.log` to exclude files. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B` and `-C`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
+| `rg` (alias `grep`) | Search file content or filter piped text. Lower-case text ignores case, and an upper-case letter makes the search case-sensitive. Use `-i` or `-s` to choose. It skips hidden files, dot files and, in a Git repository, the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. `rg` has no `-H` alias on purpose, because in the real `rg`, `-H` shows the file name. Use `-u` to include ignored files. Use `-g` to search only the files that match a glob, for example `-g *.txt` or `-g src/**`. Use `-g !*.log` to exclude files. Other options are `-v`, `-w`, `-n`, `-l`, `-A`, `-B` and `-C`. Use `-Office` to search `.docx`, `.xlsx` and `.pptx` files. |
 | `fzf` | Pick an item from a list. Type text to filter the list. Type `#2` to pick item 2. |
 | `bat` | Show a file with line numbers and basic syntax colors. Office files show as text. Use `-Range 100-200` to show some lines and `-Pattern` to highlight text. |
 | `tldr` | Show examples for the profile commands. Run `tldr` with no argument to list the commands. |
@@ -24,7 +24,7 @@ The profile adds these commands:
 | `cd` | Change folder. Records the visit for `z`. `cd -` goes back to the previous folder. |
 | `delta` | Show the differences between two files. Use `-s` for side by side. The command compares Office files as text. |
 | `sd` | Replace text in files, line by line. It shows a preview and changes no file until you add `-Apply`. It keeps the encoding and the line endings of each file. It skips hidden files, dot files and the files that `.gitignore` ignores. Use `-Hidden` to include hidden files and dot files. Use `-u` to include ignored files. Other options are `-F`, `-w`, `-i`, `-s` and `-g`. `sd-undo` restores the files that the last `-Apply` changed. |
-| `rnm` | Rename files by regex. It shows a preview and changes no name until you add `-Apply`. Use `-r` for subfolders and `-Folders` to rename folders too. A name conflict stops the whole run. If a rename fails, the command undoes the renames that it made. |
+| `rnm` | Rename files by regex. It shows a preview and changes no name until you add `-Apply`. Use `-r` for subfolders and `-Folders` to rename folders too. It skips hidden files and dot files, and with `-r` the files that `.gitignore` ignores. Use `-H` (or `-Hidden`) to include hidden files and dot files. Use `-u` (or `-NoIgnore`) with `-r` to include ignored files. A name conflict stops the whole run. If a rename fails, the command undoes the renames that it made. |
 | `doctor` | Check the language mode, the data folders, the commands that the profile needs, the share roots and the index. |
 | `ls`, `ll` | List files. Colors show the file type. |
 | `cpath`, `unc`, `cb`, `pb` | Copy paths or text to the clipboard, or get the clipboard text. |
@@ -102,7 +102,7 @@ The profile sets the default encoding of `Out-File`, `Set-Content`, `Add-Content
 
 The profile writes its data to `$env:LOCALAPPDATA\ps-profile`. The profile creates this folder at startup. The folder contains:
 
-- `idx3_*.idx` and `idx3_*.state`: the file index for each share root. The name has the root in lower case and a hash of it. Thus two different roots get their own index, and two spellings of one root, for example in another case, use the same index.
+- `idx3_*.idx` and `idx3_*.state`: the file index for each share root. Version 2.1.0 introduces these names. Version 2.0.0 and before use `idx2_*`, and the first index build of 2.1.0 deletes the old files. The name has the root in lower case and a hash of it. Thus two different roots get their own index, and two spellings of one root, for example in another case, use the same index.
 - `index.lock`: exists only while an index build runs.
 - `idx3_*.partial`: exists while an index build runs. The index is `old` until the build ends.
 - `z.txt`: the folder history for `z`.
@@ -146,17 +146,20 @@ nix shell nixpkgs#powershell nixpkgs#fd nixpkgs#ripgrep nixpkgs#sd -c pwsh -NoPr
 ```
 
 - To run some tests only, give a regex for the test names, for example `-Only 'rnm swaps'`.
+- `-WorkDir` sets the folder for the test files. The default is `ps-profile-tests` in the temp folder. The tests delete the folder at the end. Add `-Keep` to keep it, for example to look at the files after a failed test.
 - Exit code 1 means that a test failed. Exit code 2 means that the profile is loaded in the session, or that `-WorkDir` is a folder that is not empty and that the tests did not make.
 - A test that needs a tool that is not on the computer shows `SKIP` and does not fail.
 - CI passes only when the first line has `real tools: git, rg, fd, sd` and the last line has `0 failed, 1 skipped`. The one skipped test needs Windows.
 - `tests/check-types.ps1` checks that the profile uses only the types, methods and commands that ConstrainedLanguage mode permits. It needs FullLanguage mode, so run it apart from `tests.ps1`: `pwsh -NoProfile -File tests/check-types.ps1` on Mac or Linux, or `powershell -NoProfile -File tests\check-types.ps1` on a Windows computer where no policy sets ConstrainedLanguage mode. Exit code 1 means that it found a problem. Exit code 2 means that it cannot run.
-- The version is in 4 places: line 1 of the profile, the newest version heading in [CHANGELOG.md](CHANGELOG.md), [Install](#install) and [Release](#release).
+- The version is in 4 places: line 1 of the profile, the newest version heading in [CHANGELOG.md](CHANGELOG.md), [Install](#install) and [Release](#release). Between releases, line 1 has the next version with `-dev`, for example `2.1.0-dev`, and [CHANGELOG.md](CHANGELOG.md) lists the changes under `[Unreleased]`. The other 3 places show the last release. The tests check this.
 
 ## Release
 
-The current version is 2.0.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is 2.0.0. See [CHANGELOG.md](CHANGELOG.md). The default branch has the changes for the next version, 2.1.0. Line 1 of the profile on the default branch says `2.1.0-dev`.
 
-Before the merge, change the version in line 1 of the profile, in [CHANGELOG.md](CHANGELOG.md), in [Install](#install) and in this section.
+Before the merge, remove `-dev` from line 1 of the profile. In [CHANGELOG.md](CHANGELOG.md), change `[Unreleased]` to the version and the date. Change the version in [Install](#install) and in this section.
+
+After the release, set line 1 of the profile to the next version with `-dev`, and add an empty `[Unreleased]` section to [CHANGELOG.md](CHANGELOG.md).
 
 After the change merges to the default branch:
 

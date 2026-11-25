@@ -1,4 +1,4 @@
-$global:PSProfileVersion = '2.0.0'
+$global:PSProfileVersion = '2.1.0-dev'
 $global:ShareRoots = @()
 
 $global:PSProfileDataDir = Join-Path $env:LOCALAPPDATA 'ps-profile'
@@ -806,6 +806,7 @@ function global:rg {
         [Alias('n')][switch]$LineNumber,
         [Alias('s')][switch]$CaseSensitive,
         [Alias('u')][switch]$NoIgnore,
+        # No -H alias on purpose: in the real rg, -H shows the file name. fd and rnm have -H.
         [switch]$Hidden,
         [int]$MaxSizeMB = 20,
         [switch]$Office
@@ -991,12 +992,10 @@ function global:fzf {
     $texts = @(foreach ($it in $items) {
         $t = $it
         if ($it -isnot [string]) {
-            $display = Get-PSProfileProperty $it 'Display'
             $full = Get-PSProfileProperty $it 'FullName'
             $matchPath = Get-PSProfileProperty $it 'Path'
             $matchLine = Get-PSProfileProperty $it 'LineNumber'
-            if ($display) { $t = $display }
-            elseif ($full) { $t = $full }
+            if ($full) { $t = $full }
             elseif ($matchPath -and $matchLine) { $t = '{0}:{1}: {2}' -f $matchPath, $matchLine, (Get-PSProfileProperty $it 'Line') }
             else { $t = (($it | Out-String).Trim() -replace '\s+', ' ') }
         }
@@ -1731,6 +1730,7 @@ function global:sd {
         [Alias('w')][switch]$Word,
         [Alias('s')][switch]$CaseSensitive,
         [Alias('u')][switch]$NoIgnore,
+        # No -H alias on purpose, as in rg: in the real rg, -H shows the file name. fd and rnm have -H.
         [switch]$Hidden,
         [int]$MaxSizeMB = 20,
         [switch]$Apply
@@ -1804,7 +1804,9 @@ function global:sd {
         if ($n.ReadOnly) { Write-Warning ('sd: skipped {0} read-only file(s).' -f $n.ReadOnly) }
         if (-not $n.Files) { Write-Host 'sd: no matches.' -ForegroundColor DarkGray; return }
         if ($Apply) {
-            Write-Host ('sd: changed {0} of {1} file(s), {2} line(s) found.' -f $n.Written, $n.Files, $n.Lines) -ForegroundColor Cyan
+            $failed = ''
+            if ($n.Failed) { $failed = ' {0} file(s) failed.' -f $n.Failed }
+            Write-Host (('sd: changed {0} of {1} file(s), {2} line(s) found.' -f $n.Written, $n.Files, $n.Lines) + $failed) -ForegroundColor Cyan
             if ($n.Written) { Write-Host 'Run sd-undo to restore the files.' -ForegroundColor DarkGray }
         } else {
             Write-Host ('sd: preview of {0} line(s) in {1} file(s). No file changed. Add -Apply to write.' -f $n.Lines, $n.Files) -ForegroundColor Cyan
@@ -2150,6 +2152,8 @@ $global:PSProfileTldr = [ordered]@{
                      "rnm 'draft' 'final' -Apply  # Rename the files",
                      "rnm '^(\d+)-' 'item-`$1-' -r  # Also in subfolders",
                      "rnm 'old' 'new' -Folders  # Also rename folders",
+                     "rnm 'old' 'new' -H  # Also rename hidden files and dot files",
+                     "rnm 'old' 'new' -r -u  # With -r, also rename the files that .gitignore ignores",
                      "fd -t d temp | rnm 'temp' 'tmp'  # Rename the folders that fd finds"
     'doctor'       = 'Check what the profile can use on this computer.',
                      'doctor  # Language mode, folders, commands, share roots and index'
