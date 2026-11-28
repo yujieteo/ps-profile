@@ -47,7 +47,7 @@ $problems = @(
         } elseif ($kind -eq 'CommandAst') {
             $command = "$($n.GetCommandName())"
             if ($command -match '^(Add-Type|Invoke-Expression|iex)$') { 'line {0}: {1} is not permitted' -f $n.Extent.StartLineNumber, $command }
-            if ($command -eq 'New-Object' -and ($n.Extent.Text -match '-ComObject' -or $n.Extent.Text -notmatch '^New-Object\s+(PSObject|DateTime)\b')) {
+            if ($command -eq 'New-Object' -and $n.Extent.Text -notmatch '^New-Object\s+(?:-TypeName\s+)?(PSObject|DateTime)\b') {
                 'line {0}: New-Object makes a type that is not PSObject or DateTime' -f $n.Extent.StartLineNumber
             }
         }
