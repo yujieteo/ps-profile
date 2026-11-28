@@ -149,9 +149,8 @@ nix shell nixpkgs#powershell nixpkgs#fd nixpkgs#ripgrep nixpkgs#sd -c pwsh -NoPr
 - `-WorkDir` sets the folder for the test files. The default is `ps-profile-tests` in the temp folder. The tests delete the folder at the end. Add `-Keep` to keep it, for example to look at the files after a failed test.
 - Exit code 1 means that a test failed. Exit code 2 means that the profile is loaded in the session, or that `-WorkDir` is a folder that is not empty and that the tests did not make.
 - A test that needs a tool that is not on the computer shows `SKIP` and does not fail.
-- CI passes only when the first line has `real tools: git, rg, fd, sd` and the last line has `0 failed, 1 skipped`. The one skipped test needs Windows.
-- `tests/check-types.ps1` checks that the profile uses only the types, methods and commands that ConstrainedLanguage mode permits. It needs FullLanguage mode, so run it apart from `tests.ps1`: `pwsh -NoProfile -File tests/check-types.ps1` on Mac or Linux, or `powershell -NoProfile -File tests\check-types.ps1` on a Windows computer where no policy sets ConstrainedLanguage mode. Exit code 1 means that it found a problem. Exit code 2 means that it cannot run.
-- The version is in 4 places: line 1 of the profile, the newest version heading in [CHANGELOG.md](CHANGELOG.md), [Install](#install) and [Release](#release). Between releases, line 1 has the next version with `-dev`, for example `2.1.0-dev`, and [CHANGELOG.md](CHANGELOG.md) lists the changes under `[Unreleased]`. The other 3 places show the last release. The tests check this.
+- CI checks that all four tools (`git`, `rg`, `fd`, `sd`) were found and that `tests.ps1` and `tests/check-types.ps1` pass.
+- `tests/check-types.ps1` checks that the profile uses only the types and commands that ConstrainedLanguage mode permits. It needs FullLanguage mode, so run it apart from `tests.ps1`: `pwsh -NoProfile -File tests/check-types.ps1` on Mac or Linux, or `powershell -NoProfile -File tests\check-types.ps1` on a Windows computer where no policy sets ConstrainedLanguage mode. Exit code 1 means that it found a problem. Exit code 2 means that it cannot run.
 
 ## Release
 

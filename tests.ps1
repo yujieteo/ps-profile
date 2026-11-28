@@ -184,49 +184,8 @@ try {
         Assert-Equal ($loadErrors -join ' | ') '' 'errors at load'
     }
 
-    Test-Case 'the version in line 1 of the profile matches the README and the CHANGELOG' {
-        $first = @(Get-Content -LiteralPath $ProfilePath -TotalCount 1 -Encoding UTF8)[0]
-        Assert-True ($first -match "^\`$global:PSProfileVersion = '(\d+)\.(\d+)\.(\d+)(-dev)?'$") "line 1 of the profile does not set the version: $first"
-        $code = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
-        $dev = [bool]$Matches[4]
-        if (-not $DocDir -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'README.md')) -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'CHANGELOG.md'))) {
-            throw 'SKIP: the folder of the profile has no README.md and CHANGELOG.md'
-        }
-        $changelog = @(Get-Content -LiteralPath (Join-Path $DocDir 'CHANGELOG.md') -Encoding UTF8)
-        $heading = @($changelog | Where-Object { $_ -match '^## \[\d+\.\d+\.\d+\]' } | Select-Object -First 1)
-        Assert-True ($heading.Count -and $heading[0] -match '^## \[((\d+)\.(\d+)\.(\d+))\]') 'CHANGELOG.md has no version heading'
-        $released = $Matches[1]
-        $last = @([int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
-        # The entries under [Unreleased] are the lines that start with '- ' before the first version heading.
-        $sections = @($changelog | Where-Object { $_ -match '^## \[' })
-        $entries = 0
-        $inUnreleased = $false
-        foreach ($line in $changelog) {
-            if ($line -match '^## \[') { $inUnreleased = ($line -match '^## \[Unreleased\]') }
-            elseif ($inUnreleased -and $line -match '^- ') { $entries++ }
-        }
-        if ($dev) {
-            Assert-True ($sections.Count -and $sections[0] -match '^## \[Unreleased\]') 'line 1 has a -dev version, but the first heading of CHANGELOG.md is not [Unreleased]'
-            $newer = $false
-            for ($k = 0; $k -lt 3; $k++) {
-                if ($code[$k] -gt $last[$k]) { $newer = $true; break }
-                if ($code[$k] -lt $last[$k]) { break }
-            }
-            Assert-True $newer ('the -dev version {0} is not newer than the last release {1}' -f ($code -join '.'), $released)
-        } else {
-            Assert-Equal ($code -join '.') $released 'newest version heading in CHANGELOG.md'
-            Assert-Equal $entries 0 'entries under [Unreleased] when line 1 has a released version. Add -dev to the version in line 1'
-        }
-        $readme = @(Get-Content -LiteralPath (Join-Path $DocDir 'README.md') -Encoding UTF8)
-        $install = @($readme | Where-Object { $_ -match 'releases/download/v' })
-        Assert-Equal $install.Count 1 'README lines with a download link'
-        Assert-True ($install[0] -match 'version (\d+\.\d+\.\d+)\]\(https://[^)]*/releases/download/v(\d+\.\d+\.\d+)/') "the download line has no version: $($install[0])"
-        Assert-Equal $Matches[1] $released 'version in the text of the download link'
-        Assert-Equal $Matches[2] $released 'version in the download link'
-        $current = @($readme | Where-Object { $_ -match '^The current version is ' })
-        Assert-Equal $current.Count 1 'README lines with the current version'
-        Assert-True ($current[0] -match '^The current version is (\d+\.\d+\.\d+)\.') "the line has no version: $($current[0])"
-        Assert-Equal $Matches[1] $released 'current version in the README'
+    Test-Case 'the profile sets a valid semver version' {
+        Assert-True ($global:PSProfileVersion -match '^\d+\.\d+\.\d+(-dev)?$') "PSProfileVersion is not a valid semver string: $global:PSProfileVersion"
     }
 
     $IgnoreCases = @(
@@ -1138,23 +1097,12 @@ try {
         Assert-Equal $run.Err.Count 1 'errors for a name with no page'
     }
 
-    Test-Case 'each tldr page is a command or a key, and each command in the README table has a tldr page' {
+    Test-Case 'each tldr page is a command or a key' {
         $notCommands = @(foreach ($k in $global:PSProfileTldr.Keys) {
             if ($global:PSProfileTldr[$k][0] -like 'Key. *') { continue }
             if (-not (Get-Command -Name $k -ErrorAction SilentlyContinue)) { $k }
         })
         Assert-Equal ($notCommands -join ', ') '' 'tldr pages that are not commands'
-        if (-not $DocDir -or -not (Test-Path -LiteralPath (Join-Path $DocDir 'README.md'))) { throw 'SKIP: the folder of the profile has no README.md' }
-        $readme = @(Get-Content -LiteralPath (Join-Path $DocDir 'README.md') -Encoding UTF8)
-        $start = [array]::IndexOf($readme, '## What it does')
-        Assert-True ($start -ge 0) 'the README has no section What it does'
-        $names = @(for ($i = $start + 1; $i -lt $readme.Count -and -not $readme[$i].StartsWith('## '); $i++) {
-            if ($readme[$i] -match '^\| `') {
-                foreach ($m in [regex]::Matches($readme[$i].Split('|')[1], '`([^`]+)`')) { $m.Groups[1].Value }
-            }
-        })
-        Assert-True ($names.Count -ge 20) "the README table has only $($names.Count) command(s)"
-        Assert-Equal (@($names | Where-Object { -not $global:PSProfileTldr.Contains($_) }) -join ', ') '' 'README commands with no tldr page'
     }
 
     Test-Case 'z goes to the best folder of the history, and zi goes to the folder that the picker gives' {

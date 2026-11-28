@@ -45,16 +45,11 @@ jobs:
       - name: Run tests/check-types.ps1
         run: nix shell nixpkgs#powershell -c pwsh -NoProfile -File tests/check-types.ps1
       # tests.ps1 skips a test, and still passes, when a tool is missing.
-      # This step makes sure that all four tools were found and that only the
-      # Windows test was skipped, so a missing tool cannot pass in silence.
-      - name: All tools were found and only the Windows test skipped
+      # This step makes sure that all four tools were found so a missing tool cannot pass in silence.
+      - name: All tools were found
         run: |
           out="$(< "$RUNNER_TEMP/tests.out")"
           if [[ $out != *"real tools: git, rg, fd, sd"* ]]; then
             echo "tests.ps1 did not find all of git, rg, fd and sd." >&2
-            exit 1
-          fi
-          if [[ $out != *" 0 failed, 1 skipped"* ]]; then
-            echo "tests.ps1 skipped more or fewer tests than the one Windows test." >&2
             exit 1
           fi

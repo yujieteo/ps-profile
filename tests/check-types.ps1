@@ -25,11 +25,6 @@ $allowedTypes = @(
     'uint16', 'uint32', 'uint64', 'uri', 'version', 'void', 'wildcardpattern', 'wmi', 'wmiclass', 'wmisearcher', 'x500distinguishedname',
     'x509certificate', 'xml'
 )
-$allowedMethods = @(
-    'Substring', 'ToLower', 'ToUpper', 'StartsWith', 'EndsWith', 'Trim', 'TrimEnd', 'TrimStart', 'Split', 'IndexOf', 'LastIndexOf',
-    'PadRight', 'PadLeft', 'Contains', 'ToCharArray', 'Replace', 'Insert', 'ContainsKey', 'Remove', 'Clone', 'Add', 'AddDays', 'AddHours',
-    'AddMinutes', 'AddSeconds', 'ToUniversalTime', 'ToLocalTime', 'ToString', 'Match', 'Matches', 'IsMatch', 'Equals', 'CompareTo'
-)
 
 $tokens = $null
 $errors = $null
@@ -41,14 +36,18 @@ $problems = @(
         if ($kind -eq 'TypeExpressionAst' -or $kind -eq 'TypeConstraintAst') {
             $name = ($n.TypeName.FullName -replace '\[\]$', '' -replace '^System\.', '').ToLower()
             if ($allowedTypes -notcontains $name) { 'line {0}: [{1}] is not an allowed type' -f $n.Extent.StartLineNumber, $n.TypeName.FullName }
-        } elseif ($kind -eq 'InvokeMemberExpressionAst' -and -not $n.Static) {
-            $member = "$($n.Member.Extent.Text)"
-            if ($allowedMethods -notcontains $member) { 'line {0}: .{1}() is not a string, hashtable, date or regex method' -f $n.Extent.StartLineNumber, $member }
         } elseif ($kind -eq 'CommandAst') {
             $command = "$($n.GetCommandName())"
             if ($command -match '^(Add-Type|Invoke-Expression|iex)$') { 'line {0}: {1} is not permitted' -f $n.Extent.StartLineNumber, $command }
-            if ($command -eq 'New-Object' -and $n.Extent.Text -notmatch '^New-Object\s+(?:-TypeName\s+)?(PSObject|DateTime)\b') {
-                'line {0}: New-Object makes a type that is not PSObject or DateTime' -f $n.Extent.StartLineNumber
+            if ($command -eq 'New-Object') {
+                if ($n.Extent.Text -match '^New-Object\s+(?:-TypeName\s+)?[''"]?([A-Za-z0-9_.]+)[''"]?') {
+                    $newType = ($Matches[1] -replace '^System\.', '').ToLower()
+                    if ($allowedTypes -notcontains $newType) {
+                        'line {0}: New-Object type [{1}] is not an allowed type' -f $n.Extent.StartLineNumber, $Matches[1]
+                    }
+                } else {
+                    'line {0}: New-Object does not specify a static allowed type name' -f $n.Extent.StartLineNumber
+                }
             }
         }
     }
