@@ -2,12 +2,14 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "deny": [
+      "Bash(git tag)",
       "Bash(git tag *)",
       "Bash(git push origin v*)",
       "Bash(git push --tags*)",
       "Bash(git push * --tags*)",
       "Bash(git push *--follow-tags*)",
       "Bash(git push *refs/tags/*)",
+      "Bash(gh release)",
       "Bash(gh release *)",
       "Bash(cp * $PROFILE*)",
       "Bash(cp *WindowsPowerShell*)",
@@ -22,6 +24,7 @@
       "Bash(*tee *$PROFILE*)",
       "Bash(*tee *WindowsPowerShell*)",
       "Bash(*tee *Documents/PowerShell*)",
+      "Bash(*tee *Documents\\PowerShell*)",
       "Bash(*tee */.config/powershell*)",
       "Bash(*Copy-Item*$PROFILE*)",
       "Bash(*Copy-Item*WindowsPowerShell*)",
@@ -43,7 +46,12 @@
       "Edit(~/Documents/PowerShell/**)",
       "Edit(~/OneDrive/Documents/WindowsPowerShell/**)",
       "Edit(~/OneDrive/Documents/PowerShell/**)",
-      "Edit(~/.config/powershell/**)"
+      "Edit(~/.config/powershell/**)",
+      "Write(~/Documents/WindowsPowerShell/**)",
+      "Write(~/Documents/PowerShell/**)",
+      "Write(~/OneDrive/Documents/WindowsPowerShell/**)",
+      "Write(~/OneDrive/Documents/PowerShell/**)",
+      "Write(~/.config/powershell/**)"
     ]
   }
 }
