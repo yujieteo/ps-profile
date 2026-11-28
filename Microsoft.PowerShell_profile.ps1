@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 function global:Test-PSProfileToHost {
     [OutputType([bool])]
     param($Invocation)
-    $Invocation.CommandOrigin -eq 'Runspace' -and
-    $Invocation.PipelinePosition -eq $Invocation.PipelineLength -and
+    if ($Invocation.CommandOrigin -ne 'Runspace' -or $Invocation.PipelinePosition -ne $Invocation.PipelineLength) { return $false }
+    if ($Invocation.OffsetInLine -le 1) { return $true }
     $Invocation.Line.Substring(0, $Invocation.OffsetInLine - 1) -notmatch '[=(]\s*$'
 }
 
@@ -106,7 +106,8 @@ function global:Read-PSProfileEncoded {
     $text = Get-Content -LiteralPath $Path -Raw -Encoding $enc -ErrorAction SilentlyContinue
     if ($null -eq $text) { return @{ Text = ''; Enc = $enc; Bom = $bom } }
     if ($enc -eq 'UTF8' -and $text.IndexOf([char]0xFFFD) -ge 0) {
-        $text = Get-Content -LiteralPath $Path -Raw -Encoding $global:PSProfileAnsi
+        $text = Get-Content -LiteralPath $Path -Raw -Encoding $global:PSProfileAnsi -ErrorAction SilentlyContinue
+        if ($null -eq $text) { $text = '' }
         $enc = $global:PSProfileAnsi
         $bom = $false
     }
@@ -206,7 +207,9 @@ function global:ConvertFrom-PSProfileOffice([string]$Path) {
                     $type = Get-PSProfileXmlAttr $c.Groups[1].Value 't'
                     $v = ''
                     if ($body -match '<v>([^<]*)</v>') { $v = ConvertFrom-PSProfileXmlText $Matches[1] }
-                    if ($type -eq 's') { $v = $ss[[int]$v] }
+                    if ($type -eq 's') {
+                        if ($v -match '^\d+$' -and [int]$v -lt $ss.Count) { $v = $ss[[int]$v] } else { $v = '' }
+                    }
                     elseif ($type -eq 'inlineStr') {
                         $t = foreach ($m in [regex]::Matches($body, '<t(?:\s[^>]*)?>([^<]*)</t>')) { $m.Groups[1].Value }
                         $v = ConvertFrom-PSProfileXmlText (@($t) -join '')
@@ -224,7 +227,7 @@ function global:ConvertFrom-PSProfileOffice([string]$Path) {
                 $xml = Get-Content -LiteralPath $file -Raw -Encoding UTF8
                 $shapes = $xml -split '<p:cNvPr\b'
                 for ($i = 1; $i -lt $shapes.Count; $i++) {
-                    $name = ConvertFrom-PSProfileXmlText (Get-PSProfileXmlAttr ($shapes[$i] -replace '>.*', '') 'name')
+                    $name = ConvertFrom-PSProfileXmlText (Get-PSProfileXmlAttr ($shapes[$i] -replace '(?s)>.*', '') 'name')
                     $paras = foreach ($p in ($shapes[$i] -split '</a:p>')) {
                         $t = Get-PSProfileRunText $p
                         if ($t.Trim()) { $t }
@@ -373,7 +376,7 @@ $global:PSProfileIndexBuilder = {
                     $ticks = '' + $item.LastWriteTimeUtc.Ticks
                     if (-not $line -or $line.Split("`t")[0] -ne $ticks) {
                         $kids = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue -ErrorVariable listErr)
-                        if ($listErr.Count -and $line) { $failed = $true }
+                        if ($listErr.Count) { $failed = $true }
                         else {
                             $files = @(foreach ($k in $kids) {
                                 if (-not $k.PSIsContainer) { $k.Name + '|' + $k.Length + '|' + $k.LastWriteTimeUtc.Ticks }
@@ -966,7 +969,11 @@ function global:Get-PSProfilePreview($Item, [int]$Rows) {
         return
     }
     if ($i.Length -gt 20MB) { return @{ N = ''; Text = '(file over 20 MB)'; Mark = $false } }
-    try { $lines = Get-PSProfileFileLines $i.FullName } catch { return @{ N = ''; Text = '(binary file)'; Mark = $false } }
+    try { $lines = Get-PSProfileFileLines $i.FullName } catch {
+        $msg = $_.Exception.Message
+        if (-not $msg) { $msg = 'unreadable file' }
+        return @{ N = ''; Text = "($msg)"; Mark = $false }
+    }
     $a = 1
     if ($line) { $a = $line - [int]($Rows / 2) }
     if ($a -lt 1) { $a = 1 }
@@ -1009,7 +1016,7 @@ function global:fzf {
     if ($maxRows -gt 50) { $maxRows = 50 }
     while ($true) {
         $tokens = @($Query -split '\s+' | Where-Object { $_ })
-        $cand = $texts
+        $cand = @(for ($i = 0; $i -lt $texts.Count; $i++) { @{ Index = $i; Text = $texts[$i] } })
         $rxs = @(foreach ($tok in $tokens) {
             $rx = (@($tok.ToCharArray() | ForEach-Object { [regex]::Escape([string]$_) })) -join '.*?'
             if ($tok -match '[\\^$.|?*+()\[\]{}]') {
@@ -1019,12 +1026,13 @@ function global:fzf {
             }
             '(?i)' + $rx
         })
-        foreach ($rx in $rxs) { $cand = @($cand -match $rx) }
+        foreach ($rx in $rxs) { $cand = @($cand | Where-Object { $_.Text -match $rx }) }
         $total = $cand.Count
         if ($tokens.Count) {
             if ($cand.Count -gt 5000) { $cand = $cand[0..4999] }
             $lowerTokens = @(foreach ($tok in $tokens) { $tok.ToLower() })
-            $top = @(@(foreach ($t in $cand) {
+            $top = @(@(foreach ($entry in $cand) {
+                $t = $entry.Text
                 $lower = $t.ToLower()
                 $leaf = $t.LastIndexOf('\')
                 if ($t.LastIndexOf('/') -gt $leaf) { $leaf = $t.LastIndexOf('/') }
@@ -1041,16 +1049,14 @@ function global:fzf {
                     if ($at -eq $leaf) { $score += 25 }
                     if ($at -eq 0 -or $t.Substring($at - 1, 1) -match '[^A-Za-z0-9]') { $score += 15 }
                 }
-                @{ Text = $t; Score = $score }
-            }) | Sort-Object { $_.Score } -Descending | Select-Object -First $maxRows | ForEach-Object { $_.Text })
+                @{ Index = $entry.Index; Text = $t; Score = $score }
+            }) | Sort-Object { $_.Score } -Descending | Select-Object -First $maxRows)
         } else {
             $top = @($cand | Select-Object -First $maxRows)
         }
         $prev = @()
         if ($top.Count -and $width -ge 60) {
-            for ($i = 0; $i -lt $texts.Count; $i++) {
-                if ($texts[$i] -ceq $top[0]) { $prev = @(Get-PSProfilePreview $items[$i] $maxRows); break }
-            }
+            $prev = @(Get-PSProfilePreview $items[$top[0].Index] $maxRows)
         }
         Write-Host ('{0} of {1} match' -f $total, $texts.Count) -ForegroundColor DarkGray
         if ($prev.Count) {
@@ -1061,7 +1067,7 @@ function global:fzf {
             for ($i = 0; $i -lt $rows; $i++) {
                 if ($i -lt $top.Count) {
                     Write-Host ('{0,3} ' -f ('#' + ($i + 1))) -ForegroundColor Cyan -NoNewline
-                    Write-Host (Format-PSProfileFit $top[$i] ($lw - 4) -End:($top[$i] -match '[\\/]')) -NoNewline
+                    Write-Host (Format-PSProfileFit $top[$i].Text ($lw - 4) -End:($top[$i].Text -match '[\\/]')) -NoNewline
                 } else {
                     Write-Host (''.PadRight($lw)) -NoNewline
                 }
@@ -1080,14 +1086,13 @@ function global:fzf {
         } else {
             for ($i = 0; $i -lt $top.Count; $i++) {
                 Write-Host ('{0,3} ' -f ('#' + ($i + 1))) -ForegroundColor Cyan -NoNewline
-                Write-Host ($top[$i] -replace '\s*[\r\n]+\s*', ' ')
+                Write-Host ($top[$i].Text -replace '\s*[\r\n]+\s*', ' ')
             }
         }
         $r = Read-Host 'Type #number to pick, text to filter, Enter to quit'
         if (-not $r) { return }
         if ($r -match '^#(\d+)$' -and [int]$Matches[1] -ge 1 -and [int]$Matches[1] -le $top.Count) {
-            $pick = $top[[int]$Matches[1] - 1]
-            for ($i = 0; $i -lt $texts.Count; $i++) { if ($texts[$i] -ceq $pick) { return $items[$i] } }
+            return $items[$top[[int]$Matches[1] - 1].Index]
         }
         $Query = $r
     }
@@ -1178,6 +1183,7 @@ function global:zi([string]$Query) {
 
 Remove-Item Alias:cd -Force -ErrorAction SilentlyContinue
 function global:cd {
+    $prev = (Get-Location).ProviderPath
     try {
         if ($args.Count -eq 1 -and $args[0] -ceq '-') {
             if (-not $global:PSProfileOldPwd) { Write-Error 'cd: no previous folder.'; return }
@@ -1186,7 +1192,12 @@ function global:cd {
             Set-Location @args -ErrorAction Stop
         }
     } catch { Write-Error $_; return }
-    if ($args.Count -and $MyInvocation.CommandOrigin -eq 'Runspace') { Add-PSProfileZ (Get-Location).ProviderPath }
+    $now = (Get-Location).ProviderPath
+    if ($now -ne $prev) {
+        $global:PSProfileOldPwd = $prev
+        $global:PSProfileLastPwd = $now
+    }
+    if ($args.Count -and $MyInvocation.CommandOrigin -eq 'Runspace') { Add-PSProfileZ $now }
 }
 
 function global:Get-PSProfileDiff([string[]]$A, [string[]]$B) {
@@ -1463,8 +1474,15 @@ function global:bat {
             if ($Matches[1]) { $from = [int]$Matches[1] }
             if ($Matches[2]) { $to = [int]$Matches[2] }
         }
+        if ($from -lt 1) { $from = 1 }
+        $badPattern = $false
+        if ($Pattern) {
+            try { $null = [regex]::IsMatch('', '(?i)' + $Pattern) }
+            catch { Write-Error "bat: invalid pattern '$Pattern'."; $badPattern = $true }
+        }
     }
     process {
+        if ($badPattern) { return }
         foreach ($p in $Path) {
             if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Error "bat: '$p' not found."; continue }
             try { $lines = Get-PSProfileFileLines $p } catch { Write-Error "bat: $($_.Exception.Message)"; continue }
@@ -1954,20 +1972,20 @@ function global:rnm {
 function global:Get-PSProfileAppLocker {
     [OutputType([hashtable])]
     param()
-    $state = @{ Available = $false; Policy = $null; Rules = 0; Audit = $false; Error = '' }
-    if (-not (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue) -or -not (Get-Command Test-AppLockerPolicy -ErrorAction SilentlyContinue)) { return $state }
+    $state = @{ Available = $false; Rules = 0; Audit = $false; Error = '' }
+    if (-not (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)) { return $state }
     $state.Available = $true
     try {
-        $state.Policy = Get-AppLockerPolicy -Effective -ErrorAction Stop
+        $policy = Get-AppLockerPolicy -Effective -ErrorAction Stop
     } catch {
         $state.Error = $_.Exception.Message
         return $state
     }
-    if (-not $state.Policy.PSObject.Properties['RuleCollections']) {
+    if (-not $policy.PSObject.Properties['RuleCollections']) {
         $state.Rules = -1
         return $state
     }
-    foreach ($c in @(Get-PSProfileProperty $state.Policy 'RuleCollections')) {
+    foreach ($c in @(Get-PSProfileProperty $policy 'RuleCollections')) {
         if ($null -eq $c) { continue }
         $state.Rules += @($c).Count
         if ("$(Get-PSProfileProperty $c 'EnforcementMode')" -match 'Audit') { $state.Audit = $true }
@@ -2287,15 +2305,20 @@ function global:tail($Path, [Alias('n')]$Count = 10, [Alias('f')][switch]$Follow
 }
 
 function global:wc([Alias('l')][switch]$Lines, [Alias('w')][switch]$Words, [Alias('c', 'm')][switch]$Chars) {
-    $field = ''
-    if ($Lines) { $field = 'Lines' } elseif ($Words) { $field = 'Words' } elseif ($Chars) { $field = 'Chars' }
+    $fields = @()
+    if ($Lines) { $fields += 'Lines' }
+    if ($Words) { $fields += 'Words' }
+    if ($Chars) { $fields += 'Chars' }
     $paths = @($args)
     $texts = @(if ($paths.Count) {
-        foreach ($p in $paths) { @{ Path = $p; Text = Read-PSProfileText $p } }
+        foreach ($p in $paths) {
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Error "wc: '$p' not found."; continue }
+            @{ Path = $p; Text = Read-PSProfileText $p }
+        }
     } else {
         $pipedLines = @($input | ForEach-Object { "$_" })
         if ($pipedLines.Count) { @{ Path = ''; Text = ($pipedLines -join "`n") + "`n" } }
-        elseif ($field) { @{ Path = ''; Text = '' } }
+        elseif ($fields.Count) { @{ Path = ''; Text = '' } }
     })
     foreach ($t in $texts) {
         $s = '' + $t.Text
@@ -2305,8 +2328,9 @@ function global:wc([Alias('l')][switch]$Lines, [Alias('w')][switch]$Words, [Alia
             Chars = $s.Length
             Path  = $t.Path
         }
-        if ($field) { $counts[$field]; continue }
-        New-Object PSObject -Property $counts | Select-Object Lines, Words, Chars, Path
+        if ($fields.Count -eq 1) { $counts[$fields[0]]; continue }
+        $cols = if ($fields.Count -gt 1) { @($fields + 'Path') } else { @('Lines', 'Words', 'Chars', 'Path') }
+        New-Object PSObject -Property $counts | Select-Object $cols
     }
 }
 
