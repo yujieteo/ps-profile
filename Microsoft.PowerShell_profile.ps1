@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath $global:PSProfileDataDir)) {
     New-Item -ItemType Directory -Path $global:PSProfileDataDir -Force | Out-Null
 }
 if (-not (Test-Path -LiteralPath Variable:global:PSProfileIndexCache)) { $global:PSProfileIndexCache = @{} }
-foreach ($name in 'PSProfileLastId', 'PSProfileLastPwd', 'PSProfileOldPwd', 'PSProfileGitDir') {
+foreach ($name in 'PSProfileLastId', 'PSProfileLastPwd', 'PSProfileOldPwd', 'PSProfileGitPwd', 'PSProfileGitDir') {
     if (-not (Test-Path -LiteralPath "Variable:global:$name")) { Set-Variable -Name $name -Scope Global -Value $null }
 }
 Remove-Variable name
@@ -1183,7 +1183,7 @@ function global:zi([string]$Query) {
 
 Remove-Item Alias:cd -Force -ErrorAction SilentlyContinue
 function global:cd {
-    $prev = (Get-Location).ProviderPath
+    $prev = (Get-Location).Path
     try {
         if ($args.Count -eq 1 -and $args[0] -ceq '-') {
             if (-not $global:PSProfileOldPwd) { Write-Error 'cd: no previous folder.'; return }
@@ -1192,12 +1192,13 @@ function global:cd {
             Set-Location @args -ErrorAction Stop
         }
     } catch { Write-Error $_; return }
-    $now = (Get-Location).ProviderPath
+    $loc = Get-Location
+    $now = $loc.Path
     if ($now -ne $prev) {
         $global:PSProfileOldPwd = $prev
         $global:PSProfileLastPwd = $now
     }
-    if ($args.Count -and $MyInvocation.CommandOrigin -eq 'Runspace') { Add-PSProfileZ $now }
+    if ($args.Count -and $MyInvocation.CommandOrigin -eq 'Runspace' -and $loc.Provider.Name -eq 'FileSystem') { Add-PSProfileZ $loc.ProviderPath }
 }
 
 function global:Get-PSProfileDiff([string[]]$A, [string[]]$B) {
@@ -1297,10 +1298,12 @@ function global:delta {
             $side = $false
         }
     }
-    if (-not (Test-Path -LiteralPath $Path1)) { Write-Error "delta: '$Path1' not found."; return }
-    if (-not (Test-Path -LiteralPath $Path2)) { Write-Error "delta: '$Path2' not found."; return }
-    $a = Get-PSProfileFileLines $Path1
-    $b = Get-PSProfileFileLines $Path2
+    if (-not (Test-Path -LiteralPath $Path1 -PathType Leaf)) { Write-Error "delta: '$Path1' not found."; return }
+    if (-not (Test-Path -LiteralPath $Path2 -PathType Leaf)) { Write-Error "delta: '$Path2' not found."; return }
+    try {
+        $a = Get-PSProfileFileLines $Path1
+        $b = Get-PSProfileFileLines $Path2
+    } catch { Write-Error "delta: $($_.Exception.Message)"; return }
     if ($a.Count -gt 20000 -or $b.Count -gt 20000) {
         Write-Warning ('delta: large input ({0} and {1} lines). This can be slow.' -f $a.Count, $b.Count)
     }
@@ -2438,6 +2441,9 @@ function global:prompt {
     if ($p -ne $global:PSProfileLastPwd) {
         if ($global:PSProfileLastPwd) { $global:PSProfileOldPwd = $global:PSProfileLastPwd }
         $global:PSProfileLastPwd = $p
+    }
+    if ($p -ne $global:PSProfileGitPwd) {
+        $global:PSProfileGitPwd = $p
         $global:PSProfileGitDir = ''
         if ($loc.Provider.Name -eq 'FileSystem') {
             try { $global:PSProfileGitDir = Find-PSProfileGitDir $loc.ProviderPath } catch { $global:PSProfileGitDir = '' }
